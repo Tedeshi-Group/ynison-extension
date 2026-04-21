@@ -65,6 +65,57 @@
   color: rgba(244, 246, 248, 0.63);
 }
 
+.ym-sync-backend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-bottom: 18px;
+}
+
+.ym-sync-backend-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(244, 246, 248, 0.45);
+}
+
+.ym-sync-segmented {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  gap: 2px;
+}
+
+.ym-sync-segment {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  color: rgba(244, 246, 248, 0.72);
+  background: transparent;
+  transition: background-color 0.12s ease, color 0.12s ease;
+  max-width: min(220px, 52vw);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ym-sync-segment:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ym-sync-segment--active {
+  background: rgba(255, 224, 0, 0.2);
+  color: #fff7bf;
+}
+
 .ym-sync-actions {
   display: flex;
   gap: 9px;

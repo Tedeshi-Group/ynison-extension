@@ -190,6 +190,23 @@
           </div>
         </div>
 
+        <div class="ym-sync-backend">
+          <span class="ym-sync-backend-label">Сервер</span>
+          <div class="ym-sync-segmented" role="group" aria-label="Адрес API">
+            <button type="button" class="ym-sync-segment" data-api-target="domain" title="https://ynison.tedeshi.ru">
+              По домену
+            </button>
+            <button
+              type="button"
+              class="ym-sync-segment"
+              data-api-target="lan"
+              title="http://192.168.31.205:10001"
+            >
+              192.168.31.205:10001
+            </button>
+          </div>
+        </div>
+
         <div class="ym-sync-card ym-sync-card--lobby">
           <div class="ym-sync-avatars" data-participants></div>
 
@@ -229,6 +246,22 @@
       void app.recreateRoom();
     });
     app.bindAction(root, "close-page", app.closeSyncPage);
+
+    app.UI.apiTargetDomainBtn = root.querySelector('[data-api-target="domain"]');
+    app.UI.apiTargetLanBtn = root.querySelector('[data-api-target="lan"]');
+    const segmented = root.querySelector(".ym-sync-segmented");
+    if (segmented) {
+      segmented.addEventListener("click", (event) => {
+        const btn = event.target.closest("[data-api-target]");
+        if (!btn || !segmented.contains(btn)) {
+          return;
+        }
+        const value = btn.getAttribute("data-api-target");
+        if (value === "domain" || value === "lan") {
+          void app.applyApiTarget(value);
+        }
+      });
+    }
 
     return root;
   };
@@ -370,6 +403,17 @@
       : `<div class="ym-sync-empty">Пока в комнате только ты. Отправь ссылку другу, и его аватар появится здесь.</div>`;
 
     app.UI.copyInviteBtn.disabled = !app.STATE.inviteLink;
+
+    if (app.UI.apiTargetDomainBtn && app.UI.apiTargetLanBtn) {
+      const lan = app.STATE.apiTarget === "lan";
+      app.UI.apiTargetDomainBtn.classList.toggle("ym-sync-segment--active", !lan);
+      app.UI.apiTargetLanBtn.classList.toggle("ym-sync-segment--active", lan);
+      app.UI.apiTargetDomainBtn.setAttribute("aria-pressed", lan ? "false" : "true");
+      app.UI.apiTargetLanBtn.setAttribute("aria-pressed", lan ? "true" : "false");
+      const busy = app.STATE.isBusy;
+      app.UI.apiTargetDomainBtn.disabled = busy;
+      app.UI.apiTargetLanBtn.disabled = busy;
+    }
   };
 
   app.buildStatusText = function buildStatusText() {

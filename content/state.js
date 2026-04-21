@@ -8,6 +8,8 @@
   app.modules.state = true;
 
   app.constants = {
+    REMOTE_API_ORIGIN: "https://ynison.tedeshi.ru",
+    LAN_API_ORIGIN: "http://192.168.31.205:10001",
     DEFAULT_API_BASE: "https://ynison.tedeshi.ru/api",
     STORAGE_CLIENT_KEY: "ym-sync-client-id",
     STORAGE_ROOM_KEY: "ym-sync-room-id",
@@ -31,6 +33,7 @@
 
   app.STATE = {
     profile: null,
+    apiTarget: "domain",
     apiBase: app.constants.DEFAULT_API_BASE,
     roomId: "",
     clientId: "",
@@ -78,6 +81,8 @@
     toast: null,
     copyInviteBtn: null,
     playerBarCopyBtn: null,
+    apiTargetDomainBtn: null,
+    apiTargetLanBtn: null,
   };
 
   app.normalizeRoomId = function normalizeRoomId(value) {

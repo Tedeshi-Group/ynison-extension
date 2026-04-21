@@ -7,21 +7,44 @@
   app.modules.clientApi = true;
 
   app.loadApiBase = async function loadApiBase() {
+    const origin =
+      app.STATE.apiTarget === "lan" ? app.constants.LAN_API_ORIGIN : app.constants.REMOTE_API_ORIGIN;
+    return app.normalizeApiBase(origin);
+  };
+
+  app.applyApiTarget = async function applyApiTarget(target) {
+    if (target !== "domain" && target !== "lan") {
+      return;
+    }
+
+    if (app.STATE.apiTarget === target) {
+      return;
+    }
+
+    if (app.STATE.isBusy) {
+      if (typeof app.toast === "function") {
+        app.toast("Подожди завершения текущей операции");
+      }
+      return;
+    }
+
+    const origin = target === "lan" ? app.constants.LAN_API_ORIGIN : app.constants.REMOTE_API_ORIGIN;
+
     try {
-      const value = await new Promise((resolve) => {
-        if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
-          resolve(app.constants.DEFAULT_API_BASE);
-          return;
-        }
+      app.STATE.apiTarget = target;
+      app.STATE.apiBase = app.normalizeApiBase(origin);
+      app.disconnectFromRoom({ silent: true });
+      await app.ensureAutoRoom();
 
-        chrome.storage.local.get(["syncApiBase"], (data) => {
-          resolve(data && typeof data.syncApiBase === "string" ? data.syncApiBase : app.constants.DEFAULT_API_BASE);
-        });
-      });
-
-      return app.normalizeApiBase(value);
-    } catch (_error) {
-      return app.constants.DEFAULT_API_BASE;
+      if (typeof app.toast === "function") {
+        app.toast(target === "lan" ? "Сервер: 192.168.31.205:10001" : "Сервер: ynison.tedeshi.ru");
+      }
+    } catch (error) {
+      app.setError(error);
+    } finally {
+      if (typeof app.render === "function") {
+        app.render();
+      }
     }
   };
 
@@ -82,7 +105,6 @@
       if (!silentToast && typeof app.toast === "function") {
         app.toast("Комната создана");
       }
-      await app.syncPlaybackNow({ force: true });
       return true;
     } catch (error) {
       app.setError(error);
@@ -181,7 +203,8 @@
     }
   };
 
-  app.disconnectFromRoom = function disconnectFromRoom() {
+  app.disconnectFromRoom = function disconnectFromRoom(options = {}) {
+    const { silent = false } = options;
     app.closeSocket({ manual: true });
     app.clearReconnectTimer();
     localStorage.removeItem(app.constants.STORAGE_ROOM_KEY);
@@ -205,7 +228,7 @@
     if (typeof app.render === "function") {
       app.render();
     }
-    if (typeof app.toast === "function") {
+    if (!silent && typeof app.toast === "function") {
       app.toast("Локальное подключение к комнате отключено");
     }
   };
@@ -489,7 +512,7 @@
 
   app.sendSocketMessage = function sendSocketMessage(payload) {
     if (!app.STATE.socket || app.STATE.socket.readyState !== WebSocket.OPEN) {
-      app.debugWarn("Socket send skipped: socket not open", payload && payload.type, payload);
+      app.debugWarn("Socket send skipped: socket not open", payload && payload.type);
       return false;
     }
 

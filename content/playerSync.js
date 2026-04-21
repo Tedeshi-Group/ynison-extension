@@ -191,7 +191,7 @@
 
     const now = Date.now();
     if (now - pending.createdAt > app.constants.REMOTE_APPLY_TTL_MS) {
-      app.debugWarn("Pending remote control dropped by TTL", pending);
+      app.debugWarn("Pending remote control dropped by TTL", pending.reason, pending.attempts);
       app.clearRemotePlaybackControlRetry();
       return;
     }
@@ -204,7 +204,7 @@
     });
     if (settled || pending.attempts >= app.constants.REMOTE_APPLY_MAX_ATTEMPTS) {
       if (!settled) {
-        app.debugWarn("Pending remote control dropped by attempts", pending);
+        app.debugWarn("Pending remote control dropped by attempts", pending.reason, pending.attempts);
       }
       app.clearRemotePlaybackControlRetry();
       return;
