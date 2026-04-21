@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Yandex Music Sync Lobby",
+  "version": "0.1.0",
+  "description": "Sync listening lobby for Yandex Music web player.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://music.yandex.ru/*",
+    "https://music.yandex.com/*",
+    "https://ynison.tedeshi.ru/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://music.yandex.ru/*", "https://music.yandex.com/*"],
+      "js": [
+        "content/state.js",
+        "content/clientApi.js",
+        "content/playerSync.js",
+        "content/roomUi.js",
+        "content/bootstrap.js"
+      ],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Yandex Sync Lobby"
+  }
+}
