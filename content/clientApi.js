@@ -50,7 +50,9 @@
 
   app.buildApiUrl = function buildApiUrl(pathname) {
     const origin = String(app.STATE.apiBase || "").replace(/\/+$/, "");
-    const base = new URL(`${origin}/api/`);
+    const root =
+      app.STATE.apiTarget === "lan" ? `${origin}/` : `${origin}/api/`;
+    const base = new URL(root);
     return new URL(pathname.replace(/^\//, ""), base).toString();
   };
 
