@@ -26,7 +26,8 @@
   };
 
   app.buildApiUrl = function buildApiUrl(pathname) {
-    const base = new URL(`${app.STATE.apiBase}/`);
+    const origin = String(app.STATE.apiBase || "").replace(/\/+$/, "");
+    const base = new URL(`${origin}/api/`);
     return new URL(pathname.replace(/^\//, ""), base).toString();
   };
 

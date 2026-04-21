@@ -7,7 +7,7 @@
   "host_permissions": [
     "https://music.yandex.ru/*",
     "https://music.yandex.com/*",
-    "https://ynison.tedeshi.ru/*"
+    "https://ynison.tedeshi.ru/api*"
   ],
   "background": {
     "service_worker": "background.js"
