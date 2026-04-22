@@ -1,0 +1,331 @@
+(() => {
+  const SRC = "ym-sync";
+  const KIND = "ym_ws";
+
+  const NativeWebSocket = window.WebSocket;
+  if (!NativeWebSocket || NativeWebSocket.__ymSyncPatched) {
+    return;
+  }
+
+  const getApp = () => {
+    try {
+      return window.__ymSync || null;
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const safeToText = async (data) => {
+    try {
+      if (typeof data === "string") {
+        return data;
+      }
+      if (data instanceof ArrayBuffer) {
+        return new TextDecoder().decode(new Uint8Array(data));
+      }
+      if (ArrayBuffer.isView(data)) {
+        return new TextDecoder().decode(data);
+      }
+      if (data instanceof Blob) {
+        return await data.text();
+      }
+    } catch (_error) {
+      // noop
+    }
+    return null;
+  };
+
+  const safeJsonParse = (text) => {
+    if (typeof text !== "string") {
+      return null;
+    }
+    const t = text.trim();
+    if (!t || (!t.startsWith("{") && !t.startsWith("["))) {
+      return null;
+    }
+    try {
+      return JSON.parse(t);
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const post = (direction, payload, meta) => {
+    try {
+      window.postMessage({ source: SRC, kind: KIND, direction, payload, meta }, "*");
+    } catch (_error) {
+      // noop
+    }
+  };
+
+  const buildOverriddenWsPayload = (originalPayload, remotePlayerState) => {
+    if (!originalPayload || typeof originalPayload !== "object") {
+      return null;
+    }
+    if (!remotePlayerState || typeof remotePlayerState !== "object") {
+      return null;
+    }
+    if (!originalPayload.player_state || typeof originalPayload.player_state !== "object") {
+      return null;
+    }
+
+    return {
+      ...originalPayload,
+      player_state: remotePlayerState,
+    };
+  };
+
+  const canOverrideIncoming = () => {
+    const app = getApp();
+    if (!app || !app.STATE || !app.STATE.ym) {
+      return false;
+    }
+
+    const self = typeof app.getSelfParticipant === "function" ? app.getSelfParticipant() : null;
+    if (self && self.role === "host") {
+      return false;
+    }
+
+    if (!app.STATE.ym.remotePlayerState) {
+      return false;
+    }
+
+    const ageMs = Date.now() - Number(app.STATE.ym.remotePlayerStateAt || 0);
+    return ageMs >= 0 && ageMs < 15000;
+  };
+
+  const overrideIncomingMessageEvent = (event) => {
+    if (!event) {
+      return event;
+    }
+    if (!canOverrideIncoming()) {
+      return event;
+    }
+
+    const app = getApp();
+    const remote = app && app.STATE && app.STATE.ym ? app.STATE.ym.remotePlayerState : null;
+    if (!remote) {
+      return event;
+    }
+
+    const raw = event.data;
+
+    const patchFromText = (text) => {
+      if (!text) {
+        return event;
+      }
+
+      const originalPayload = safeJsonParse(text);
+      if (!originalPayload || !originalPayload.player_state) {
+        return event;
+      }
+
+      const overridden = buildOverriddenWsPayload(originalPayload, remote);
+      if (!overridden) {
+        return event;
+      }
+
+      const newText = JSON.stringify(overridden);
+      let newData = newText;
+
+      try {
+        if (raw instanceof ArrayBuffer) {
+          newData = new TextEncoder().encode(newText).buffer;
+        } else if (ArrayBuffer.isView(raw)) {
+          newData = new TextEncoder().encode(newText);
+        } else if (raw instanceof Blob) {
+          newData = new Blob([newText], { type: raw.type || "application/json" });
+        }
+      } catch (_error) {
+        newData = newText;
+      }
+
+      try {
+        return new MessageEvent("message", {
+          data: newData,
+          origin: event.origin,
+          lastEventId: event.lastEventId,
+          source: event.source,
+          ports: event.ports,
+        });
+      } catch (_error) {
+        return event;
+      }
+    };
+
+    if (typeof raw === "string") {
+      return patchFromText(raw);
+    }
+
+    try {
+      if (raw instanceof ArrayBuffer) {
+        const text = new TextDecoder().decode(new Uint8Array(raw));
+        return patchFromText(text);
+      }
+      if (ArrayBuffer.isView(raw)) {
+        const text = new TextDecoder().decode(raw);
+        return patchFromText(text);
+      }
+    } catch (_error) {
+      return event;
+    }
+
+    if (raw instanceof Blob) {
+      return raw
+        .text()
+        .then((text) => patchFromText(text))
+        .catch(() => event);
+    }
+
+    return event;
+  };
+
+  const listenerMapBySocket = new WeakMap();
+
+  const wrapMessageListener = (ws, listener) => {
+    if (typeof listener !== "function" || !ws) {
+      return listener;
+    }
+
+    let socketMap = listenerMapBySocket.get(ws);
+    if (!socketMap) {
+      socketMap = new WeakMap();
+      listenerMapBySocket.set(ws, socketMap);
+    }
+
+    const existing = socketMap.get(listener);
+    if (existing) {
+      return existing;
+    }
+
+    const wrapped = function (event) {
+      const patched = overrideIncomingMessageEvent(event);
+      if (patched && typeof patched.then === "function") {
+        patched.then((resolved) => {
+          try {
+            listener.call(this, resolved);
+          } catch (_error) {
+            // noop
+          }
+        });
+        return;
+      }
+
+      try {
+        listener.call(this, patched);
+      } catch (_error) {
+        // noop
+      }
+    };
+
+    socketMap.set(listener, wrapped);
+    return wrapped;
+  };
+
+  const Patched = function (url, protocols) {
+    const ws =
+      protocols !== undefined ? new NativeWebSocket(url, protocols) : new NativeWebSocket(url);
+    try {
+      ws.addEventListener("message", (event) => {
+        const raw = event && event.data;
+        if (typeof raw === "string") {
+          const parsed = safeJsonParse(raw);
+          if (parsed && (parsed.player_state || parsed.update_player_state)) {
+            post("in", parsed, { url: String(url || ""), type: "text" });
+          }
+          return;
+        }
+
+        Promise.resolve(safeToText(raw)).then((text) => {
+          if (!text) {
+            return;
+          }
+          const parsed = safeJsonParse(text);
+          if (parsed && (parsed.player_state || parsed.update_player_state)) {
+            post("in", parsed, { url: String(url || ""), type: "binary->text" });
+          }
+        });
+      });
+    } catch (_error) {
+      // noop
+    }
+    return ws;
+  };
+
+  Patched.prototype = NativeWebSocket.prototype;
+  Object.setPrototypeOf(Patched, NativeWebSocket);
+
+  const nativeSend = NativeWebSocket.prototype.send;
+  NativeWebSocket.prototype.send = function (data) {
+    try {
+      if (typeof data === "string") {
+        const parsed = safeJsonParse(data);
+        if (parsed && (parsed.player_state || parsed.update_player_state)) {
+          post("out", parsed, { url: String((this && this.url) || ""), type: "text" });
+        }
+      } else {
+        Promise.resolve(safeToText(data)).then((text) => {
+          if (!text) {
+            return;
+          }
+          const parsed = safeJsonParse(text);
+          if (parsed && (parsed.player_state || parsed.update_player_state)) {
+            post("out", parsed, { url: String((this && this.url) || ""), type: "binary->text" });
+          }
+        });
+      }
+    } catch (_error) {
+      // noop
+    }
+    return nativeSend.apply(this, arguments);
+  };
+
+  const nativeAddEventListener = NativeWebSocket.prototype.addEventListener;
+  NativeWebSocket.prototype.addEventListener = function (type, listener, options) {
+    if (type === "message") {
+      return nativeAddEventListener.call(this, type, wrapMessageListener(this, listener), options);
+    }
+    return nativeAddEventListener.call(this, type, listener, options);
+  };
+
+  const nativeRemoveEventListener = NativeWebSocket.prototype.removeEventListener;
+  NativeWebSocket.prototype.removeEventListener = function (type, listener, options) {
+    if (type === "message" && listener && typeof listener === "function") {
+      const socketMap = listenerMapBySocket.get(this);
+      const wrapped = socketMap ? socketMap.get(listener) : null;
+      return nativeRemoveEventListener.call(this, type, wrapped || listener, options);
+    }
+    return nativeRemoveEventListener.call(this, type, listener, options);
+  };
+
+  try {
+    const desc = Object.getOwnPropertyDescriptor(NativeWebSocket.prototype, "onmessage");
+    if (desc && (typeof desc.set === "function" || typeof desc.get === "function")) {
+      Object.defineProperty(NativeWebSocket.prototype, "onmessage", {
+        configurable: true,
+        enumerable: desc.enumerable,
+        get() {
+          return desc.get ? desc.get.call(this) : null;
+        },
+        set(handler) {
+          if (typeof handler !== "function") {
+            if (desc.set) {
+              desc.set.call(this, handler);
+            }
+            return;
+          }
+          const wrapped = wrapMessageListener(this, handler);
+          if (desc.set) {
+            desc.set.call(this, wrapped);
+          }
+        },
+      });
+    }
+  } catch (_error) {
+    // noop
+  }
+
+  window.WebSocket = Patched;
+  window.WebSocket.__ymSyncPatched = true;
+})();
+

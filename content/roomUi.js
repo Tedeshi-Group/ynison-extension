@@ -190,23 +190,6 @@
           </div>
         </div>
 
-        <div class="ym-sync-backend">
-          <span class="ym-sync-backend-label">Сервер</span>
-          <div class="ym-sync-segmented" role="group" aria-label="Адрес API">
-            <button type="button" class="ym-sync-segment" data-api-target="domain" title="https://ynison.tedeshi.ru">
-              По домену
-            </button>
-            <button
-              type="button"
-              class="ym-sync-segment"
-              data-api-target="lan"
-              title="http://192.168.31.205:10001"
-            >
-              192.168.31.205:10001
-            </button>
-          </div>
-        </div>
-
         <div class="ym-sync-card ym-sync-card--lobby">
           <div class="ym-sync-avatars" data-participants></div>
 

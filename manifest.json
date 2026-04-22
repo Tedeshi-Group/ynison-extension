@@ -3,6 +3,11 @@
   "name": "Yandex Music Sync Lobby",
   "version": "0.1.0",
   "description": "Sync listening lobby for Yandex Music web player.",
+  "icons": {
+    "16": "icons/icon_16x16.png",
+    "32": "icons/icon_32x32.png",
+    "48": "icons/icon_48x48.png"
+  },
   "host_permissions": [
     "https://music.yandex.ru/*",
     "https://music.yandex.com/*",
@@ -10,6 +15,12 @@
     "http://192.168.31.205:10001/*"
   ],
   "content_scripts": [
+    {
+      "matches": ["https://music.yandex.ru/*", "https://music.yandex.com/*"],
+      "js": ["content/wsHook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": ["https://music.yandex.ru/*", "https://music.yandex.com/*"],
       "js": [
@@ -23,7 +34,22 @@
       "run_at": "document_idle"
     }
   ],
-  "action": {
-    "default_title": "Yandex Sync Lobby"
-  }
+  "action": {},
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content/wsHook.js"
+      ],
+      "matches": [
+        "https://music.yandex.ru/*",
+        "https://music.yandex.com/*"
+      ]
+    }
+  ],
+  "permissions": [
+    "tabs"
+  ]
 }

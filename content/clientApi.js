@@ -427,6 +427,23 @@
       return;
     }
 
+    if (payload.type === "ym_player_state") {
+      if (payload.source && payload.source === app.STATE.clientId) {
+        return;
+      }
+      if (typeof app.setRemoteYmPlayerState === "function") {
+        const state =
+          payload.playerState ||
+          payload.player_state ||
+          (payload.ymPlayerState && (payload.ymPlayerState.playerState || payload.ymPlayerState.player_state)) ||
+          null;
+        if (state) {
+          app.setRemoteYmPlayerState(state, payload.at || (payload.ymPlayerState && payload.ymPlayerState.at));
+        }
+      }
+      return;
+    }
+
     if (payload.type === "control") {
       if (payload.from !== app.STATE.clientId) {
         app.applyIncomingControl(payload);
@@ -445,6 +462,14 @@
     }
 
     app.STATE.roomState = roomState;
+
+    if (typeof app.setRemoteYmPlayerState === "function" && roomState.ymPlayerState) {
+      const ym = roomState.ymPlayerState;
+      const state = ym.playerState || ym.player_state || ym;
+      const at = ym.at || ym.updatedAt || roomState.ymPlayerStateAt || null;
+      app.setRemoteYmPlayerState(state, at);
+    }
+
     app.STATE.roomId = app.normalizeRoomId(roomState.id) || app.STATE.roomId;
     app.STATE.inviteLink = app.STATE.roomId ? app.buildInviteLink(app.STATE.roomId) : "";
     if (app.STATE.roomId) {
