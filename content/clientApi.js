@@ -5,6 +5,18 @@
   }
 
   app.modules.clientApi = true;
+  const DEBUG_KEY = "ym-sync-debug";
+  const debugBridge = (...args) => {
+    try {
+      if (localStorage.getItem(DEBUG_KEY) !== "1") {
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.debug("[YM Sync][bridge]", ...args);
+    } catch (_error) {
+      // noop
+    }
+  };
 
   app.loadApiBase = async function loadApiBase() {
     const origin =
@@ -33,6 +45,11 @@
     try {
       app.STATE.apiTarget = target;
       app.STATE.apiBase = app.normalizeApiBase(origin);
+      try {
+        localStorage.setItem(app.constants.STORAGE_API_TARGET_KEY, target);
+      } catch (_storageError) {
+        // ignore
+      }
       app.disconnectFromRoom({ silent: true });
       await app.ensureAutoRoom();
 
@@ -50,8 +67,7 @@
 
   app.buildApiUrl = function buildApiUrl(pathname) {
     const origin = String(app.STATE.apiBase || "").replace(/\/+$/, "");
-    const root =
-      app.STATE.apiTarget === "lan" ? `${origin}/` : `${origin}/api/`;
+    const root = `${origin}/api/`;
     const base = new URL(root);
     return new URL(pathname.replace(/^\//, ""), base).toString();
   };
@@ -438,7 +454,16 @@
           (payload.ymPlayerState && (payload.ymPlayerState.playerState || payload.ymPlayerState.player_state)) ||
           null;
         if (state) {
-          app.setRemoteYmPlayerState(state, payload.at || (payload.ymPlayerState && payload.ymPlayerState.at));
+          const at = payload.at || (payload.ymPlayerState && payload.ymPlayerState.at) || Date.now();
+          app.setRemoteYmPlayerState(state, at);
+          try {
+            const self = typeof app.getSelfParticipant === "function" ? app.getSelfParticipant() : null;
+            const isHost = Boolean(self && self.role === "host");
+            window.postMessage({ source: "ym-sync", kind: "ym_state", type: "ym_player_state", at, playerState: state, isHost }, "*");
+            debugBridge("post ym_player_state", { at, isHost });
+          } catch (_error) {
+            // noop
+          }
         }
       }
       return;
@@ -468,6 +493,21 @@
       const state = ym.playerState || ym.player_state || ym;
       const at = ym.at || ym.updatedAt || roomState.ymPlayerStateAt || null;
       app.setRemoteYmPlayerState(state, at);
+      try {
+        const self = typeof app.getSelfParticipant === "function" ? app.getSelfParticipant() : null;
+        const isHost = Boolean(self && self.role === "host");
+        window.postMessage({
+          source: "ym-sync",
+          kind: "ym_state",
+          type: "ym_player_state",
+          at: Number(at || Date.now()),
+          playerState: state,
+          isHost,
+        }, "*");
+        debugBridge("post initial ymPlayerState from room_state", { at: Number(at || Date.now()), isHost });
+      } catch (_error) {
+        // noop
+      }
     }
 
     app.STATE.roomId = app.normalizeRoomId(roomState.id) || app.STATE.roomId;

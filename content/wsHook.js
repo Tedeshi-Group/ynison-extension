@@ -1,19 +1,90 @@
 (() => {
   const SRC = "ym-sync";
   const KIND = "ym_ws";
+  const BRIDGE_KIND = "ym_state";
+  const DEBUG_KEY = "ym-sync-debug";
 
   const NativeWebSocket = window.WebSocket;
   if (!NativeWebSocket || NativeWebSocket.__ymSyncPatched) {
     return;
   }
 
-  const getApp = () => {
+  const isDebug = () => {
     try {
-      return window.__ymSync || null;
+      return localStorage.getItem(DEBUG_KEY) === "1";
     } catch (_error) {
-      return null;
+      return false;
     }
   };
+
+  const log = (...args) => {
+    if (!isDebug()) {
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.debug("[YM Sync][wsHook]", ...args);
+  };
+
+  let remotePlayerState = null;
+  let remotePlayerStateAt = 0;
+  let overrideEnabled = false;
+  let lastOverrideAt = 0;
+  let lastOverrideInfo = null;
+
+  const readTrackId = (playerState) => {
+    try {
+      const queue = playerState && playerState.player_queue ? playerState.player_queue : null;
+      const list = queue && Array.isArray(queue.playable_list) ? queue.playable_list : [];
+      const idx = Number(queue && queue.current_playable_index);
+      const cur = idx >= 0 && idx < list.length ? list[idx] : null;
+      const id = cur && (cur.playable_id || cur.playableId);
+      return id ? String(id) : "";
+    } catch (_error) {
+      return "";
+    }
+  };
+
+  const publishState = () => {
+    try {
+      window.__ymSyncWsHookDebug = {
+        overrideEnabled,
+        remotePlayerStateAt,
+        remoteTrackId: readTrackId(remotePlayerState),
+        lastOverrideAt,
+        lastOverrideInfo,
+        debug: isDebug(),
+      };
+    } catch (_error) {
+      // noop
+    }
+  };
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window) {
+      return;
+    }
+    const data = event.data;
+    if (!data || data.source !== SRC || data.kind !== BRIDGE_KIND) {
+      return;
+    }
+    if (data.type !== "ym_player_state") {
+      return;
+    }
+    if (!data.playerState || typeof data.playerState !== "object") {
+      return;
+    }
+
+    remotePlayerState = data.playerState;
+    remotePlayerStateAt = Number(data.at || Date.now());
+    overrideEnabled = !Boolean(data.isHost);
+    log("bridge ym_player_state", {
+      at: remotePlayerStateAt,
+      overrideEnabled,
+      isHost: Boolean(data.isHost),
+      keys: Object.keys(remotePlayerState || {}).slice(0, 8),
+    });
+    publishState();
+  });
 
   const safeToText = async (data) => {
     try {
@@ -76,21 +147,14 @@
   };
 
   const canOverrideIncoming = () => {
-    const app = getApp();
-    if (!app || !app.STATE || !app.STATE.ym) {
+    if (!overrideEnabled) {
+      return false;
+    }
+    if (!remotePlayerState) {
       return false;
     }
 
-    const self = typeof app.getSelfParticipant === "function" ? app.getSelfParticipant() : null;
-    if (self && self.role === "host") {
-      return false;
-    }
-
-    if (!app.STATE.ym.remotePlayerState) {
-      return false;
-    }
-
-    const ageMs = Date.now() - Number(app.STATE.ym.remotePlayerStateAt || 0);
+    const ageMs = Date.now() - Number(remotePlayerStateAt || 0);
     return ageMs >= 0 && ageMs < 15000;
   };
 
@@ -102,9 +166,8 @@
       return event;
     }
 
-    const app = getApp();
-    const remote = app && app.STATE && app.STATE.ym ? app.STATE.ym.remotePlayerState : null;
-    if (!remote) {
+    const remote = remotePlayerState;
+    if (!remote || typeof remote !== "object") {
       return event;
     }
 
@@ -124,6 +187,17 @@
       if (!overridden) {
         return event;
       }
+
+      const beforeTrack = readTrackId(originalPayload.player_state);
+      const afterTrack = readTrackId(remote);
+      if (beforeTrack !== afterTrack) {
+        log("override applied trackId changed", { beforeTrack, afterTrack });
+      } else {
+        log("override applied", { trackId: afterTrack || beforeTrack });
+      }
+      lastOverrideAt = Date.now();
+      lastOverrideInfo = { beforeTrack, afterTrack, rid: originalPayload.rid, session_id: originalPayload.session_id };
+      publishState();
 
       const newText = JSON.stringify(overridden);
       let newData = newText;
@@ -154,7 +228,18 @@
     };
 
     if (typeof raw === "string") {
-      return patchFromText(raw);
+      const res = patchFromText(raw);
+      if (res === event && isDebug()) {
+        const parsed = safeJsonParse(raw);
+        if (parsed && parsed.player_state) {
+          log("override skipped (string) reason", {
+            overrideEnabled,
+            hasRemote: Boolean(remotePlayerState),
+            ageMs: Date.now() - Number(remotePlayerStateAt || 0),
+          });
+        }
+      }
+      return res;
     }
 
     try {

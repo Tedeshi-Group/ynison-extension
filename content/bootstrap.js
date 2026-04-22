@@ -58,11 +58,10 @@
       return false;
     }
 
-    const roomId = currentUrl.searchParams.get("roomId") || currentUrl.searchParams.get("session") || "";
-    const safeTarget = new URL(`${window.location.origin}/collection`);
-    safeTarget.searchParams.set("together", "1");
+    const roomId = app.readRoomIdFromUrl(currentUrl);
+    const safeTarget = new URL(`${window.location.origin}/`);
     if (roomId) {
-      safeTarget.searchParams.set("roomId", roomId);
+      safeTarget.searchParams.set("together", roomId);
     }
     window.location.replace(safeTarget.toString());
     return true;
@@ -70,12 +69,21 @@
 
   app.shouldOpenTogetherPage = function shouldOpenTogetherPage() {
     const url = new URL(window.location.href);
-    return url.pathname === "/together" || url.searchParams.get("together") === "1";
+    if (url.pathname === "/together") {
+      return true;
+    }
+    const together = app.normalizeRoomId(url.searchParams.get("together"));
+    if (together === "1") {
+      return true;
+    }
+    if (together && together !== "1") {
+      return true;
+    }
+    return false;
   };
 
   app.readRoomIdFromLocation = function readRoomIdFromLocation() {
-    const url = new URL(window.location.href);
-    return app.normalizeRoomId(url.searchParams.get("roomId") || url.searchParams.get("session") || "");
+    return app.readRoomIdFromUrl(new URL(window.location.href));
   };
 
   app.installNavigationWatcher = function installNavigationWatcher() {

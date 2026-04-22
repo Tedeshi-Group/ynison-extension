@@ -9,10 +9,11 @@
 
   app.constants = {
     REMOTE_API_ORIGIN: "https://ynison.tedeshi.ru",
-    LAN_API_ORIGIN: "http://192.168.31.205:10001",
+    LAN_API_ORIGIN: "https://192.168.31.205:10001",
     DEFAULT_API_BASE: "https://ynison.tedeshi.ru/api",
     STORAGE_CLIENT_KEY: "ym-sync-client-id",
     STORAGE_ROOM_KEY: "ym-sync-room-id",
+    STORAGE_API_TARGET_KEY: "ym-sync-api-target",
     STORAGE_DEBUG_KEY: "ym-sync-debug",
     REMOTE_GUARD_MS: 2200,
     PLAYER_SYNC_INTERVAL_MS: 1000,
@@ -69,6 +70,15 @@
     remotePlaybackRetryTimer: 0,
   };
 
+  try {
+    const storedApiTarget = localStorage.getItem(app.constants.STORAGE_API_TARGET_KEY);
+    if (storedApiTarget === "lan" || storedApiTarget === "domain") {
+      app.STATE.apiTarget = storedApiTarget;
+    }
+  } catch (_error) {
+    // ignore
+  }
+
   app.UI = {
     sidebarLink: null,
     sidebarItem: null,
@@ -89,6 +99,17 @@
     return String(value || "").trim();
   };
 
+  app.readRoomIdFromUrl = function readRoomIdFromUrl(url) {
+    if (!url) {
+      return "";
+    }
+    const roomId = app.normalizeRoomId(url.searchParams.get("roomId"));
+    const session = app.normalizeRoomId(url.searchParams.get("session"));
+    const together = app.normalizeRoomId(url.searchParams.get("together"));
+    const fromTogether = together && together !== "1" ? together : "";
+    return roomId || session || fromTogether || "";
+  };
+
   app.extractRoomId = function extractRoomId(value) {
     const rawValue = app.normalizeRoomId(value);
     if (!rawValue) {
@@ -97,7 +118,7 @@
 
     try {
       const url = new URL(rawValue);
-      return app.normalizeRoomId(url.searchParams.get("roomId") || url.searchParams.get("session") || "");
+      return app.readRoomIdFromUrl(url);
     } catch (_error) {
       return rawValue;
     }
@@ -116,7 +137,13 @@
   };
 
   app.buildInviteLink = function buildInviteLink(roomId) {
-    return `${window.location.origin}/together?roomId=${encodeURIComponent(roomId)}`;
+    const id = app.normalizeRoomId(roomId);
+    if (!id) {
+      return "";
+    }
+    const url = new URL(`${window.location.origin}/`);
+    url.searchParams.set("together", id);
+    return url.toString();
   };
 
   app.setBusy = function setBusy(value) {

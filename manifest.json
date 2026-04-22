@@ -12,7 +12,7 @@
     "https://music.yandex.ru/*",
     "https://music.yandex.com/*",
     "https://ynison.tedeshi.ru/api*",
-    "http://192.168.31.205:10001/*"
+    "https://192.168.31.205:10001/api*"
   ],
   "content_scripts": [
     {

@@ -40,7 +40,7 @@
 
     link.classList.add("ym-sync-sidebar-link");
     link.setAttribute("data-ym-sync-link", "1");
-    link.setAttribute("href", "/together");
+    link.setAttribute("href", "/");
     link.setAttribute("aria-label", "Вместе");
     link.removeAttribute("data-cursor-ref");
     app.replaceLinkIcon(link);
@@ -162,13 +162,13 @@
 
   app.syncPageUrl = function syncPageUrl() {
     const url = new URL(window.location.href);
-    url.pathname = "/together";
-    url.searchParams.set("together", "1");
+    url.pathname = "/";
     url.searchParams.delete("session");
+    url.searchParams.delete("roomId");
     if (app.STATE.roomId) {
-      url.searchParams.set("roomId", app.STATE.roomId);
+      url.searchParams.set("together", app.STATE.roomId);
     } else {
-      url.searchParams.delete("roomId");
+      url.searchParams.delete("together");
     }
     history.pushState({}, "", url.toString());
   };
