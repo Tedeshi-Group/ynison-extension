@@ -1,4 +1,4 @@
-{
+﻿{
   "manifest_version": 3,
   "name": "Yandex Music Sync Lobby",
   "version": "0.1.0",
@@ -10,23 +10,13 @@
   },
   "host_permissions": [
     "https://music.yandex.ru/*",
-    "https://music.yandex.com/*",
-    "https://ynison.tedeshi.ru/api*",
-    "https://192.168.31.205:10001/api*"
+    "https://music.yandex.com/*"
   ],
   "content_scripts": [
     {
       "matches": ["https://music.yandex.ru/*", "https://music.yandex.com/*"],
-      "js": ["content/wsHook.js"],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
-    {
-      "matches": ["https://music.yandex.ru/*", "https://music.yandex.com/*"],
       "js": [
         "content/state.js",
-        "content/clientApi.js",
-        "content/playerSync.js",
         "content/roomUi.js",
         "content/bootstrap.js"
       ],
@@ -34,22 +24,7 @@
       "run_at": "document_idle"
     }
   ],
-  "action": {},
   "background": {
     "service_worker": "background.js"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "content/wsHook.js"
-      ],
-      "matches": [
-        "https://music.yandex.ru/*",
-        "https://music.yandex.com/*"
-      ]
-    }
-  ],
-  "permissions": [
-    "tabs"
-  ]
+  }
 }

@@ -1,8 +1,9 @@
-(function ymSyncBootstrapModule() {
+﻿(function ymSyncBootstrapModule() {
   const app = window.__ymSync;
   if (!app || app.modules.bootstrap) {
     return;
   }
+
   app.modules.bootstrap = true;
 
   if (window.top !== window) {
@@ -16,70 +17,157 @@
 
   app.start = async function start() {
     app.STATE.profile = app.buildProfileFromPage();
-    app.STATE.apiBase = await app.loadApiBase();
-    app.STATE.clientId = localStorage.getItem(app.constants.STORAGE_CLIENT_KEY) || "";
-    app.STATE.joinInput = app.readRoomIdFromLocation() || localStorage.getItem(app.constants.STORAGE_ROOM_KEY) || "";
+    const invitedRoomId = app.consumeInviteParamFromLocation();
+    app.STATE.joinInput = invitedRoomId || app.readRoomIdFromLocation() || '';
 
     app.initAvatarWatcher();
     app.installSidebarEntry();
     app.installPlayerBarCopyButton();
     app.installNavigationWatcher();
-    app.installDocumentActionWatcher();
-    app.installPlayerWatchers();
     app.render();
 
     if (app.shouldOpenTogetherPage()) {
-      app.openSyncPage({ updateHistory: false });
-      if (app.STATE.joinInput) {
-        const joined = await app.joinRoom(app.STATE.joinInput, { silentToast: true });
-        if (!joined) {
-          await app.ensureAutoRoom();
-        }
-      } else {
-        await app.ensureAutoRoom();
-      }
-      return;
+      await app.openSyncPage();
     }
-
-    if (app.STATE.joinInput) {
-      const joined = await app.joinRoom(app.STATE.joinInput, { silentToast: true });
-      if (!joined) {
-        await app.ensureAutoRoom();
-      }
-      return;
-    }
-
-    await app.ensureAutoRoom();
-  };
-
-  app.redirectFromTogetherRouteIfNeeded = function redirectFromTogetherRouteIfNeeded() {
-    const currentUrl = new URL(window.location.href);
-    if (currentUrl.pathname !== "/together") {
-      return false;
-    }
-
-    const roomId = app.readRoomIdFromUrl(currentUrl);
-    const safeTarget = new URL(`${window.location.origin}/`);
-    if (roomId) {
-      safeTarget.searchParams.set("together", roomId);
-    }
-    window.location.replace(safeTarget.toString());
-    return true;
   };
 
   app.shouldOpenTogetherPage = function shouldOpenTogetherPage() {
-    const url = new URL(window.location.href);
-    if (url.pathname === "/together") {
+    return app.isTogetherUrl(window.location.href);
+  };
+
+  app.getLocationUrl = function getLocationUrl(value) {
+    if (value instanceof URL) {
+      return value;
+    }
+
+    try {
+      return value ? new URL(value, window.location.href) : new URL(window.location.href);
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  app.readTogetherRoomFromUrl = function readTogetherRoomFromUrl(url) {
+    if (!url) {
+      return '';
+    }
+
+    const together = app.normalizeRoomId(url.searchParams.get('together'));
+    if (!together || together === '1') {
+      return '';
+    }
+
+    return together;
+  };
+
+  app.isTogetherUrl = function isTogetherUrl(value) {
+    const url = app.getLocationUrl(value);
+    if (!url) {
+      return false;
+    }
+
+    const together = app.readTogetherRoomFromUrl(url);
+    if (together) {
+      return url.pathname === '/' || url.pathname === '/collection' || url.pathname === '/collection/';
+    }
+
+    if (url.pathname === '/together' || url.pathname === '/together/') {
       return true;
     }
-    const together = app.normalizeRoomId(url.searchParams.get("together"));
-    if (together === "1") {
-      return true;
-    }
-    if (together && together !== "1") {
-      return true;
-    }
+
     return false;
+  };
+
+  app.consumeInviteParamFromLocation = function consumeInviteParamFromLocation() {
+    const currentUrl = app.getLocationUrl();
+    if (!currentUrl) {
+      return '';
+    }
+
+    const invitedRoomId = app.readTogetherRoomFromUrl(currentUrl);
+    if (!currentUrl.searchParams.has('together')) {
+      return '';
+    }
+
+    try {
+      const nextState = typeof history.state === 'object' && history.state !== null ? { ...history.state } : {};
+      nextState.__ymSyncInternal = true;
+      currentUrl.searchParams.delete('together');
+      history.replaceState(nextState, '', currentUrl.toString());
+      return invitedRoomId;
+    } catch (_error) {
+      return invitedRoomId;
+    }
+  };
+
+  app.onNavigationChanged = function onNavigationChanged() {
+    const invitedRoomId = app.consumeInviteParamFromLocation();
+    const roomIdFromRoute = app.readRoomIdFromLocation();
+    const roomId = invitedRoomId || roomIdFromRoute;
+    app.STATE.joinInput = roomId;
+
+    if (app.isTogetherUrl()) {
+      const host = app.ensureMainHost();
+      const isPageRootAttached = Boolean(
+        app.UI.pageRoot &&
+          app.UI.pageRoot.isConnected &&
+          app.UI.mainHost &&
+          app.UI.mainHost === host
+      );
+
+      if (!app.STATE.isPageOpen || !isPageRootAttached) {
+        void app.openSyncPage({ updateHistory: false });
+        return;
+      }
+
+      if (roomId) {
+        if (app.STATE.roomId !== roomId) {
+          void app.joinRoom(roomId, { silentToast: true });
+        }
+        return;
+      }
+
+      if (!app.STATE.roomId) {
+        void app.ensureAutoRoom();
+      }
+      return;
+    }
+
+    if (app.STATE.isPageOpen) {
+      app.hideSyncPage();
+    }
+    app.render();
+  };
+
+  app.handleNavigationClick = function handleNavigationClick(event) {
+    if (!app.STATE.isPageOpen) {
+      return;
+    }
+
+    const target = event.target.closest('a[href]');
+    if (!target) {
+      return;
+    }
+
+    if (target.closest('.ym-sync-page')) {
+      return;
+    }
+
+    const href = target.getAttribute('href');
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) {
+      return;
+    }
+
+    const targetUrl = new URL(href, window.location.href);
+    if (targetUrl.origin !== window.location.origin) {
+      return;
+    }
+
+    if (app.isTogetherUrl(targetUrl)) {
+      return;
+    }
+
+    app.hideSyncPage();
   };
 
   app.readRoomIdFromLocation = function readRoomIdFromLocation() {
@@ -87,32 +175,58 @@
   };
 
   app.installNavigationWatcher = function installNavigationWatcher() {
+    if (app.STATE.__navigationWatchersInstalled) {
+      return;
+    }
+    app.STATE.__navigationWatchersInstalled = true;
+
     const observer = new MutationObserver(() => {
       app.installSidebarEntry();
       app.installPlayerBarCopyButton();
     });
     observer.observe(document.documentElement, { subtree: true, childList: true });
 
-    window.addEventListener("popstate", () => {
-      if (app.shouldOpenTogetherPage()) {
-        app.openSyncPage({ updateHistory: false });
-        const roomId = app.readRoomIdFromLocation();
-        if (roomId && roomId !== app.STATE.roomId) {
-          app.STATE.joinInput = roomId;
-          void app.joinRoom(roomId, { silentToast: true });
-        }
-        app.render();
+    document.addEventListener('click', app.handleNavigationClick, true);
+    window.addEventListener('popstate', () => {
+      app.onNavigationChanged();
+    });
+
+    const patchHistoryMethod = (method) => {
+      const original = history[method];
+      if (typeof original !== 'function' || original.__ymSyncPatched) {
         return;
       }
 
-      app.hideSyncPage();
-      app.render();
-    });
+      history[method] = function patchedState(...args) {
+        const result = original.apply(this, args);
+        app.onNavigationChanged();
+        return result;
+      };
+      history[method].__ymSyncPatched = true;
+    };
+
+    patchHistoryMethod('pushState');
+    patchHistoryMethod('replaceState');
   };
 
-  if (app.redirectFromTogetherRouteIfNeeded()) {
-    return;
-  }
+  app.copyToClipboard = function copyToClipboard(text, successMessage) {
+    navigator.clipboard.writeText(text).then(
+      () => app.toast(successMessage),
+      () => app.toast('Не удалось скопировать')
+    );
+  };
+
+  app.toast = function toast(text) {
+    if (!app.UI.toast) {
+      return;
+    }
+
+    app.UI.toast.textContent = text;
+    window.clearTimeout(app.UI.toast.__timer);
+    app.UI.toast.__timer = window.setTimeout(() => {
+      app.UI.toast.textContent = '';
+    }, 2500);
+  };
 
   void app.start();
 })();
