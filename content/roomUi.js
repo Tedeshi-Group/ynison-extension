@@ -125,7 +125,10 @@
   };
 
   app.openSyncPage = async function openSyncPage(options = {}) {
-    const { updateHistory = true } = options;
+    const {
+      updateHistory = true,
+      joinRoleHint = '',
+    } = options || {};
     const host = app.ensureMainHost();
     if (!host) {
       return;
@@ -155,8 +158,13 @@
     app.STATE.isPageOpen = true;
     app.setActiveSidebarEntry(true);
 
+    const effectiveJoinRoleHint = joinRoleHint || app.STATE.joinRoleHint || app.STATE.roomRole || 'listener';
     if (app.STATE.joinInput && app.normalizeRoomId(app.STATE.joinInput)) {
-      await app.joinRoom(app.STATE.joinInput, { silentToast: true });
+      await app.joinRoom(app.STATE.joinInput, {
+        silentToast: true,
+        roleHint: effectiveJoinRoleHint,
+      });
+      app.STATE.joinRoleHint = '';
     } else if (!app.STATE.roomId) {
       await app.ensureAutoRoom();
     }
@@ -228,6 +236,8 @@
           <div>
             <h1 class="ym-sync-title">Вместе</h1>
             <p class="ym-sync-subtitle" data-status-text></p>
+            <p class="ym-sync-subtitle" data-room-role-text></p>
+            <p class="ym-sync-subtitle" data-room-control-text></p>
           </div>
           <div class="ym-sync-actions">
             <button class="ym-sync-btn ym-sync-btn--ghost" data-action="recreate-room">Пересоздать комнату</button>
@@ -246,6 +256,8 @@
     `;
 
     app.UI.statusText = root.querySelector('[data-status-text]');
+    app.UI.roomRoleText = root.querySelector('[data-room-role-text]');
+    app.UI.roomControlText = root.querySelector('[data-room-control-text]');
     app.UI.roomIdText = root.querySelector('[data-room-id]');
     app.UI.roomInviteText = root.querySelector('[data-room-link]');
     app.UI.emptyHint = root.querySelector('[data-empty-hint]');
@@ -263,6 +275,12 @@
       }
       event.preventDefault();
       void app.copyInviteLink();
+    });
+
+    root.addEventListener('click', (event) => {
+      if (app.handleMemberAction(event)) {
+        event.preventDefault();
+      }
     });
 
     return root;
@@ -286,6 +304,10 @@
   app.buildAvatarTile = function buildAvatarTile(member) {
     const item = document.createElement('div');
     item.className = 'ym-sync-member';
+    const memberId = member.clientId || '';
+    if (memberId) {
+      item.dataset.memberId = memberId;
+    }
 
     const avatarWrap = document.createElement('div');
     avatarWrap.className = 'ym-sync-member-avatar-wrap';
@@ -316,6 +338,29 @@
     item.appendChild(avatarWrap);
     item.appendChild(name);
     item.appendChild(role);
+
+    if (app.STATE.roomPermissions?.canDelegate && member.role !== 'host' && memberId) {
+      const actions = document.createElement('div');
+      actions.className = 'ym-sync-member-actions';
+
+      const delegate = document.createElement('button');
+      delegate.type = 'button';
+      delegate.className = 'ym-sync-btn ym-sync-btn--ghost ym-sync-member-action';
+      delegate.setAttribute('data-member-action', 'delegate');
+      delegate.setAttribute('data-member-id', memberId);
+      delegate.textContent = 'Передать управление';
+
+      const kick = document.createElement('button');
+      kick.type = 'button';
+      kick.className = 'ym-sync-btn ym-sync-btn--ghost ym-sync-member-action';
+      kick.setAttribute('data-member-action', 'kick');
+      kick.setAttribute('data-member-id', memberId);
+      kick.textContent = 'Исключить';
+
+      actions.appendChild(delegate);
+      actions.appendChild(kick);
+      item.appendChild(actions);
+    }
 
     return item;
   };
@@ -364,6 +409,34 @@
     app.UI.participantsWrap.appendChild(app.buildInviteTile());
   };
 
+  app.handleMemberAction = function handleMemberAction(event) {
+    const actionButton = event.target.closest('[data-member-action]');
+    if (!actionButton) {
+      return false;
+    }
+    if (!app.UI.participantsWrap || !app.UI.participantsWrap.contains(actionButton)) {
+      return false;
+    }
+
+    const action = actionButton.getAttribute('data-member-action');
+    const memberId = actionButton.getAttribute('data-member-id');
+    if (!memberId) {
+      return true;
+    }
+
+    if (action === 'delegate' && typeof app.sendControlTransfer === 'function') {
+      app.sendControlTransfer(memberId, true);
+      return true;
+    }
+
+    if (action === 'kick' && typeof app.sendKick === 'function') {
+      app.sendKick(memberId);
+      return true;
+    }
+
+    return true;
+  };
+
   app.bindAction = function bindAction(root, actionName, handler) {
     const target = root.querySelector(`[data-action="${actionName}"]`);
     if (!target) {
@@ -384,6 +457,10 @@
     }
 
     app.UI.statusText.textContent = app.buildStatusText();
+
+    if (app.UI.roomInviteText) {
+      app.UI.roomInviteText.textContent = app.STATE.inviteLink || '';
+    }
 
     app.renderParticipants();
   };

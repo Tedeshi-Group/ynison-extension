@@ -18,7 +18,11 @@
   app.start = async function start() {
     app.STATE.profile = app.buildProfileFromPage();
     const invitedRoomId = app.consumeInviteParamFromLocation();
-    app.STATE.joinInput = invitedRoomId || app.readRoomIdFromLocation() || '';
+    if (invitedRoomId) {
+      app.STATE.joinRoleHint = 'listener';
+    }
+    const rawJoin = invitedRoomId || app.readRoomIdFromLocation() || '';
+    app.STATE.joinInput = rawJoin ? app.extractRoomId(rawJoin) : '';
 
     app.initAvatarWatcher();
     app.installSidebarEntry();
@@ -26,8 +30,10 @@
     app.installNavigationWatcher();
     app.render();
 
-    if (app.shouldOpenTogetherPage()) {
-      await app.openSyncPage();
+    if (invitedRoomId || app.shouldOpenTogetherPage()) {
+      await app.openSyncPage({
+        joinRoleHint: app.STATE.joinRoleHint || 'listener',
+      });
     }
   };
 
@@ -68,7 +74,7 @@
 
     const together = app.readTogetherRoomFromUrl(url);
     if (together) {
-      return url.pathname === '/' || url.pathname === '/collection' || url.pathname === '/collection/';
+      return true;
     }
 
     if (url.pathname === '/together' || url.pathname === '/together/') {
@@ -103,10 +109,11 @@
   app.onNavigationChanged = function onNavigationChanged() {
     const invitedRoomId = app.consumeInviteParamFromLocation();
     const roomIdFromRoute = app.readRoomIdFromLocation();
-    const roomId = invitedRoomId || roomIdFromRoute;
+    const rawRoomId = invitedRoomId || roomIdFromRoute;
+    const roomId = rawRoomId ? app.extractRoomId(rawRoomId) : '';
     app.STATE.joinInput = roomId;
 
-    if (app.isTogetherUrl()) {
+    if (invitedRoomId || app.isTogetherUrl()) {
       const host = app.ensureMainHost();
       const isPageRootAttached = Boolean(
         app.UI.pageRoot &&
@@ -116,13 +123,23 @@
       );
 
       if (!app.STATE.isPageOpen || !isPageRootAttached) {
-        void app.openSyncPage({ updateHistory: false });
+        void app.openSyncPage({
+          updateHistory: false,
+          joinRoleHint: app.STATE.joinRoleHint || app.STATE.roomRole || 'listener',
+        });
         return;
       }
 
       if (roomId) {
         if (app.STATE.roomId !== roomId) {
-          void app.joinRoom(roomId, { silentToast: true });
+          const joinRoleHint = invitedRoomId
+            ? 'listener'
+            : app.STATE.joinRoleHint || app.STATE.roomRole || 'listener';
+          void app.joinRoom(roomId, {
+            silentToast: true,
+            roleHint: joinRoleHint,
+          });
+          app.STATE.joinRoleHint = '';
         }
         return;
       }
