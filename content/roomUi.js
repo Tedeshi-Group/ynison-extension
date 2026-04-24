@@ -245,8 +245,7 @@
         </header>
 
         <div class="ym-sync-card ym-sync-card--lobby">
-          <p class="ym-sync-room-id" data-room-id></p>
-          <p class="ym-sync-room-link" data-room-link></p>
+          <p class="ym-sync-room-title">URL комнаты: <span class="ym-sync-room-link" data-action="copy-room-link" data-room-link role="button" tabindex="0" aria-label="Копировать ссылку на комнату"></span></p>
           <p class="ym-sync-subtitle ym-sync-room-hint" data-empty-hint></p>
           <div class="ym-sync-avatars ym-sync-avatars--lobby" data-participants></div>
 
@@ -269,8 +268,26 @@
     });
 
     root.addEventListener('click', (event) => {
+      const roomLinkTarget = event.target.closest('[data-action="copy-room-link"]');
+      if (roomLinkTarget && roomLinkTarget === app.UI.roomInviteText) {
+        event.preventDefault();
+        void app.copyInviteLink();
+        return;
+      }
+
       const target = event.target.closest('[data-action="invite-link"]');
       if (!target || !app.UI.participantsWrap || !app.UI.participantsWrap.contains(target)) {
+        return;
+      }
+      event.preventDefault();
+      void app.copyInviteLink();
+    });
+
+    root.addEventListener('keydown', (event) => {
+      if (event.target !== app.UI.roomInviteText) {
+        return;
+      }
+      if (event.key !== 'Enter' && event.key !== ' ') {
         return;
       }
       event.preventDefault();
@@ -296,7 +313,7 @@
       return;
     }
 
-    app.copyToClipboard(app.STATE.inviteLink, 'Ссылка на комнату скопирована');
+    app.copyToClipboard(app.STATE.inviteLink, 'Ссылка скопирована');
     app.UI.lastCopied = Date.now();
     app.render();
   };
@@ -309,30 +326,50 @@
       item.dataset.memberId = memberId;
     }
 
+    const readHostNameFromProfileMeta = () => {
+      const hostMeta = document.querySelector('.UserProfile_meta___okny');
+      if (!hostMeta) {
+        return '';
+      }
+      const userName = hostMeta.querySelector('.UserProfile_userName__PTRuJ');
+      if (!userName) {
+        return '';
+      }
+      return app.normalizeNickname(userName.getAttribute('title') || userName.textContent);
+    };
+
     const avatarWrap = document.createElement('div');
     avatarWrap.className = 'ym-sync-member-avatar-wrap';
+    const isHost = member.role === 'host';
+    const nickname = isHost
+      ? (readHostNameFromProfileMeta() || member.nickname || app.constants.DEFAULT_NICKNAME)
+      : (member.nickname || app.constants.DEFAULT_NICKNAME);
 
     const image = document.createElement('img');
     image.className = 'ym-sync-member-avatar';
     image.loading = 'lazy';
     image.decoding = 'async';
-    image.alt = member.nickname || 'Участник комнаты';
-    image.src = member.avatarUrl || app.avatarFromName(member.nickname || 'guest');
+    image.alt = nickname || 'Участник комнаты';
+    image.src = member.avatarUrl || app.avatarFromName(nickname || 'guest');
     image.addEventListener('error', () => {
       image.style.display = 'none';
       const fallback = document.createElement('div');
       fallback.className = 'ym-sync-member-avatar ym-sync-member-avatar--fallback';
-      fallback.textContent = String(member.nickname || '—').slice(0, 2).toUpperCase();
+      fallback.textContent = String(nickname || '—').slice(0, 2).toUpperCase();
       avatarWrap.appendChild(fallback);
     }, { once: true });
 
+    if (isHost) {
+      avatarWrap.appendChild(app.createCrownIconSvg('ym-sync-host-crown'));
+    }
+
     const name = document.createElement('p');
     name.className = 'ym-sync-member-name';
-    name.textContent = member.nickname || 'Участник';
+    name.textContent = nickname || 'Участник';
 
     const role = document.createElement('span');
     role.className = 'ym-sync-member-role';
-    role.textContent = member.role === 'host' ? 'Хост комнаты' : 'Участник';
+    role.textContent = member.role === 'host' ? 'Хост' : 'Участник';
 
     avatarWrap.appendChild(image);
     item.appendChild(avatarWrap);
@@ -348,14 +385,14 @@
       delegate.className = 'ym-sync-btn ym-sync-btn--ghost ym-sync-member-action';
       delegate.setAttribute('data-member-action', 'delegate');
       delegate.setAttribute('data-member-id', memberId);
-      delegate.textContent = 'Передать управление';
+      delegate.textContent = 'Сделать хостом';
 
       const kick = document.createElement('button');
       kick.type = 'button';
       kick.className = 'ym-sync-btn ym-sync-btn--ghost ym-sync-member-action';
       kick.setAttribute('data-member-action', 'kick');
       kick.setAttribute('data-member-id', memberId);
-      kick.textContent = 'Исключить';
+      kick.textContent = 'Выгнать';
 
       actions.appendChild(delegate);
       actions.appendChild(kick);
@@ -535,6 +572,29 @@
       node.setAttribute('stroke-linejoin', 'round');
       svg.appendChild(node);
     }
+
+    return svg;
+  };
+
+  app.createCrownIconSvg = function createCrownIconSvg(className) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('width', '24');
+    svg.setAttribute('height', '24');
+    svg.setAttribute('focusable', 'false');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('class', className);
+    svg.setAttribute('data-testid', 'crown-icon');
+
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('fill', 'currentColor');
+    path.setAttribute('fill-rule', 'evenodd');
+    path.setAttribute('clip-rule', 'evenodd');
+    path.setAttribute('d', 'M12 2.996a1 1 0 0 1 .929.629l2.78 6.953 4.837-2.468a1 1 0 0 1 1.412 1.178l-3 10A1 1 0 0 1 18 20H6a1 1 0 0 1-.963-.729L2.042 9.288A1 1 0 0 1 3.455 8.11l4.836 2.468 2.78-6.953a1 1 0 0 1 .93-.629M6.744 18h10.512l2.114-7.045-3.728 1.902a1 1 0 0 1-1.383-.52L12 6.69l-2.259 5.649a1 1 0 0 1-1.383.519L4.63 10.955z');
+    svg.appendChild(path);
 
     return svg;
   };
