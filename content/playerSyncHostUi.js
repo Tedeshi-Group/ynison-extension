@@ -1,10 +1,13 @@
-(function ymSyncPlayerModule() {
+﻿(function ymSyncPlayerModule() {
   const app = window.__ymSync;
-  if (!app || (app.modules && app.modules.playerSync)) {
+  const MODULE_NAME = 'playerSyncHostUi';
+
+  if (!app || (app.modules && app.modules[MODULE_NAME])) {
     return;
   }
 
-  app.modules.playerSync = true;
+  app.modules = app.modules || {};
+  app.modules[MODULE_NAME] = true;
 
   app.STATE.ym = app.STATE.ym || {
     remotePlayerState: null,
@@ -81,6 +84,8 @@
 
     return '';
   };
+
+  app.getTrackIdFromLocationFallback = app.getTrackIdFromLocationFallback || getTrackIdFromLocationFallback;
 
   const resolveTrackUrlFromTrackId = function resolveTrackUrlFromTrackId(trackId) {
     const normalized = String(trackId || '').trim();
@@ -181,6 +186,136 @@
       return normalized;
     }
     return '';
+  };
+
+  const readNativeNumber = function readNativeNumber(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const resolveNativePlayerState = function resolveNativePlayerState(player) {
+    const playbackSource = player || resolveNativePlayer();
+    if (!playbackSource || typeof playbackSource !== 'object') {
+      return null;
+    }
+
+    if (typeof playbackSource.getState === 'function') {
+      try {
+        const state = playbackSource.getState();
+        if (state && typeof state === 'object') {
+          return state;
+        }
+      } catch (_error) {
+        // no-op
+      }
+    }
+
+    if (typeof playbackSource.getCurrentTime === 'function' || typeof playbackSource.currentTime === 'number') {
+      return {
+        currentTime: typeof playbackSource.getCurrentTime === 'function'
+          ? readNativeNumber(playbackSource.getCurrentTime())
+          : readNativeNumber(playbackSource.currentTime),
+        duration: readNativeNumber(playbackSource.duration),
+        paused: typeof playbackSource.paused === 'boolean' ? playbackSource.paused : null,
+        isPlaying: undefined,
+      };
+    }
+
+    return playbackSource;
+  };
+
+  const readNativePlaybackState = function readNativePlaybackState(player) {
+    const state = resolveNativePlayerState(player) || {};
+    if (typeof state.isPlaying === 'boolean') {
+      return {
+        isPlaying: state.isPlaying,
+        currentTime: readNativeNumber(state.currentTime),
+        duration: readNativeNumber(state.duration || state.durationSec || state.maxPosition),
+      };
+    }
+    if (typeof state.playing === 'boolean') {
+      return {
+        isPlaying: state.playing,
+        currentTime: readNativeNumber(state.currentTime),
+        duration: readNativeNumber(state.duration || state.durationSec || state.maxPosition),
+      };
+    }
+    if (typeof state.isPaused === 'boolean') {
+      return {
+        isPlaying: !state.isPaused,
+        currentTime: readNativeNumber(state.currentPosition || state.currentTime || state.position),
+        duration: readNativeNumber(state.duration || state.durationSec || state.maxPosition),
+      };
+    }
+    if (typeof state.paused === 'boolean') {
+      return {
+        isPlaying: !state.paused,
+        currentTime: readNativeNumber(state.currentTime || state.position || state.currentPosition),
+        duration: readNativeNumber(state.duration || state.durationSec || state.maxPosition),
+      };
+    }
+    return {
+      isPlaying: undefined,
+      currentTime: readNativeNumber(state.currentTime),
+      duration: readNativeNumber(state.duration || state.durationSec || state.maxPosition),
+    };
+  };
+
+  const setNativeCurrentTime = function setNativeCurrentTime(player, positionSec) {
+    if (!player || typeof player !== 'object') {
+      return false;
+    }
+    const methods = ['seek', 'seekTo', 'setCurrentTime', 'setCurrentPosition', 'setCurrentPlaybackTime', 'setPosition'];
+    const currentTime = readNativeNumber(positionSec);
+    if (!Number.isFinite(currentTime)) {
+      return false;
+    }
+
+    for (const method of methods) {
+      const fn = player[method];
+      if (typeof fn === 'function') {
+        try {
+          fn.call(player, currentTime);
+          return true;
+        } catch (_error) {
+          // try next variant
+        }
+      }
+    }
+
+    if (typeof player.currentTime !== 'undefined') {
+      try {
+        player.currentTime = currentTime;
+        return true;
+      } catch (_error) {
+        // no-op
+      }
+    }
+
+    return false;
+  };
+
+  const applyNativePlayCommand = function applyNativePlayCommand(player, shouldPlay) {
+    if (!player || typeof player !== 'object') {
+      return false;
+    }
+
+    const actions = shouldPlay
+      ? ['play', 'playAsync']
+      : ['pause', 'stop'];
+    for (const action of actions) {
+      const fn = player[action];
+      if (typeof fn === 'function') {
+        try {
+          fn.call(player);
+          return true;
+        } catch (_error) {
+          // next command
+        }
+      }
+    }
+
+    return false;
   };
 
   const isSeekRangeElementVisible = function isSeekRangeElementVisible(el) {
@@ -476,20 +611,18 @@
       return;
     }
 
-    if (seekInput.getAttribute('data-ym-sync-listener-locked-seek') !== '1') {
-      seekInput.addEventListener('pointerdown', blockSeekInputInteraction, true);
-      seekInput.addEventListener('mousedown', blockSeekInputInteraction, true);
-      seekInput.addEventListener('click', blockSeekInputInteraction, true);
-      seekInput.addEventListener('input', blockSeekInputInteraction, true);
-      seekInput.addEventListener('change', blockSeekInputInteraction, true);
-      seekInput.classList.remove('ym-sync-listener-slider-disabled');
-    }
-
-    seekInput.setAttribute('data-ym-sync-listener-locked-seek', '1');
-    seekInput.setAttribute('aria-disabled', 'true');
-    seekInput.classList.add('ym-sync-listener-slider-disabled');
-    seekInput.style.pointerEvents = 'auto';
-    seekInput.style.cursor = 'not-allowed';
+  if (seekInput.getAttribute('data-ym-sync-listener-locked-seek') === '1') {
+    seekInput.removeEventListener('pointerdown', blockSeekInputInteraction, true);
+    seekInput.removeEventListener('mousedown', blockSeekInputInteraction, true);
+    seekInput.removeEventListener('click', blockSeekInputInteraction, true);
+    seekInput.removeEventListener('input', blockSeekInputInteraction, true);
+    seekInput.removeEventListener('change', blockSeekInputInteraction, true);
+  }
+  seekInput.removeAttribute('data-ym-sync-listener-locked-seek');
+  seekInput.removeAttribute('aria-disabled');
+  seekInput.classList.remove('ym-sync-listener-slider-disabled');
+  seekInput.style.pointerEvents = '';
+  seekInput.style.cursor = '';
     seekInput.disabled = false;
     listenerUiState.seekInput = seekInput;
   };
@@ -871,6 +1004,11 @@
   };
 
   app.getPlayingState = function getPlayingState() {
+    const nativeState = readNativePlaybackState(resolveNativePlayer());
+    if (typeof nativeState.isPlaying === 'boolean') {
+      return { isPlaying: nativeState.isPlaying };
+    }
+
     const root = app.getPlayerBar();
     if (!root) {
       return getPlaybackFromIcons() || { isPlaying: undefined };
@@ -893,21 +1031,24 @@
   };
 
   app.readCurrentHostTrackState = function readCurrentHostTrackState() {
+    const nativePlayer = resolveNativePlayer();
+    const nativeState = readNativePlaybackState(nativePlayer);
     const track = app.getTrackElements();
     const playback = app.getPlayingState();
     const mediaElement = document.querySelector('audio, video');
     const mediaState = mediaElement ? !mediaElement.paused : undefined;
-    const mediaPosition = mediaElement && Number.isFinite(mediaElement.currentTime) ? mediaElement.currentTime : null;
+    const mediaPosition = nativeState.currentTime ?? (mediaElement && Number.isFinite(mediaElement.currentTime) ? mediaElement.currentTime : null);
     const nativeSource = resolveNativePlayerSource();
     const trackId = track.trackId || resolveNativePlayerTrackId();
     const mediaSrc = track.mediaSrc || nativeSource || '';
+    const nativeDuration = readNativeNumber(nativeState.duration);
     return {
       title: track.title,
       artists: track.artists,
       trackId: track.trackId || '',
       trackUrl: mediaSrc || resolveTrackUrlFromTrackId(trackId) || window.location.href,
       mediaSrc: mediaSrc,
-      durationSec: track.durationSec,
+      durationSec: track.durationSec || nativeDuration || 0,
       positionSec: mediaPosition !== null ? mediaPosition : track.elapsedSec,
       isPlaying: typeof mediaState === 'boolean'
         ? mediaState
@@ -1283,6 +1424,11 @@
 
       const receivedAt = Number(app.STATE.ym.remotePlayerStateReceivedAt || 0);
       const targetMs = estimateRemotePositionMs(remote, receivedAt);
+    const targetSec = targetMs / 1000;
+    const nativePlayer = resolveNativePlayer();
+    if (nativePlayer && setNativeCurrentTime(nativePlayer, targetSec)) {
+      return;
+    }
 
       const input = getMainSeekRangeInput();
       if (!input) {
@@ -1579,6 +1725,8 @@
     initLog('resolved fullscreenMedia', describeNodeForLog(resolved.fullscreenMedia));
   };
 
+  app.logInitializationObjects = app.logInitializationObjects || logInitializationObjects;
+
   const findPlayButtonByClassPrefix = function findPlayButtonByClassPrefix() {
     const buttons = document.querySelectorAll('button[class*="PlayButtonWithCover_"]');
     if (buttons.length > 0) {
@@ -1755,8 +1903,14 @@
   };
 
   app.setProgressInput = function setProgressInput(seconds, options = {}) {
+    const seekPlayer = resolveNativePlayer();
+    const seekSec = Number(seconds);
+    if (seekPlayer && Number.isFinite(seekSec) && setNativeCurrentTime(seekPlayer, seekSec)) {
+      return true;
+    }
+
     const seekInput = app.findPlayerSeekRange();
-    if (!seekInput || !Number.isFinite(Number(seconds))) {
+    if (!seekInput || !Number.isFinite(seekSec)) {
       return false;
     }
     const sec = Math.max(0, Number(seconds));
@@ -1819,6 +1973,11 @@
     const current = app.getPlayingState();
     const shouldPlay = Boolean(wantPlaying);
     if (current.isPlaying === undefined || current.isPlaying === shouldPlay) {
+      return;
+    }
+
+    const nativePlayer = resolveNativePlayer();
+    if (nativePlayer && applyNativePlayCommand(nativePlayer, shouldPlay)) {
       return;
     }
 
@@ -2181,7 +2340,7 @@
       if (now - (remoteActionCooldown.blockHint || 0) > 2500) {
         remoteActionCooldown.blockHint = now;
         if (typeof app.toast === 'function') {
-          app.toast('Вы в режиме наблюдателя, действия недоступны');
+          app.toast('Вы не в режиме ведущего: управление отключено');
         }
       }
       return;
@@ -2219,18 +2378,15 @@
     if (event && event.isTrusted === false) {
       return;
     }
-    if (!app.canControl()) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      const now = Date.now();
-      if (now - (remoteActionCooldown.blockHint || 0) > 2500) {
-        remoteActionCooldown.blockHint = now;
-        if (typeof app.toast === 'function') {
-          app.toast('Вы в режиме наблюдателя, действия недоступны');
-        }
+  if (!app.canControl()) {
+    const now = Date.now();
+    if (now - (remoteActionCooldown.blockHint || 0) > 2500) {
+      remoteActionCooldown.blockHint = now;
+      if (typeof app.toast === 'function') {
+        app.toast('Вы в роли слушателя: перемотка будет передана хосту');
       }
-      return;
     }
+  }
     if (!app.isSeekInput(event.target)) {
       return;
     }
@@ -2433,506 +2589,8 @@
       app.handleIncomingRoomSnapshot(app.STATE.roomState || {});
       app.applyListenerUiLock();
     };
+
   };
 
   app.startupPlayerSync();
-})();
-(function ymSyncPlayerSyncModule() {
-  const app = window.__ymSync;
-  if (!app || (app.modules && app.modules.playerSync)) {
-    return;
-  }
-
-  app.modules = app.modules || {};
-  app.modules.playerSync = true;
-
-  const DRIFT_THRESHOLD_SEC = 0.5;
-  const PRESENCE_TTL_MS = 25_000;
-  const PRESENCE_INTERVAL_MS = 8_000;
-  const LOCAL_BROADCAST_THROTTLE_MS = 700;
-  const COMMAND_TTL_MS = 20_000;
-  const CHANNEL_PREFIX = 'ym-sync-room:';
-
-  let mediaElement = null;
-  let mediaObserver = null;
-  let mediaWatchTimer = null;
-  let presenceTimer = null;
-  let channel = null;
-  let lastBroadcastAt = 0;
-  let currentlyApplying = false;
-
-  const makeCommandId = function makeCommandId() {
-    return `cmd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  };
-
-  const parseNum = function parseNum(value) {
-    const num = Number(value);
-    if (!Number.isFinite(num)) {
-      return 0;
-    }
-    return num;
-  };
-
-  const getChannelName = function getChannelName(roomId) {
-    return `${CHANNEL_PREFIX}${roomId}`;
-  };
-
-  function getCurrentTrackIdFromLocation() {
-    return getTrackIdFromLocationFallback();
-  }
-
-  const extractTrackId = function extractTrackId(value) {
-    if (!value || typeof value !== 'object') {
-      return getCurrentTrackIdFromLocation();
-    }
-    if (value.trackId) {
-      return String(value.trackId);
-    }
-    if (value.track && value.track.id) {
-      return String(value.track.id);
-    }
-    if (value.id) {
-      return String(value.id);
-    }
-    if (value.url) {
-      const fromUrl = String(value.url).match(/(?:track|id)=([0-9]+)/i) || window.location.pathname.match(/track\/(\d+)/i);
-      if (fromUrl && fromUrl[1]) {
-        return String(fromUrl[1]);
-      }
-    }
-    return getCurrentTrackIdFromLocation();
-  };
-
-  const toPlaybackSnapshot = function toPlaybackSnapshot() {
-    if (!mediaElement) {
-      return null;
-    }
-    const trackId = extractTrackId({
-      trackId: mediaElement.getAttribute?.('data-track-id'),
-      url: window.location.href,
-    });
-
-    return {
-      trackId,
-      trackUrl: window.location.href,
-      position: parseNum(mediaElement.currentTime),
-      duration: parseNum(mediaElement.duration),
-      paused: Boolean(mediaElement.paused),
-      at: Date.now(),
-    };
-  };
-
-  const setMediaTrackMeta = function setMediaTrackMeta(snapshot) {
-    if (!mediaElement || !snapshot || !snapshot.trackId) {
-      return;
-    }
-    mediaElement.setAttribute('data-ym-sync-track-id', snapshot.trackId);
-  };
-
-  const isHost = function isHost() {
-    const roomId = app.STATE.roomId;
-    if (!roomId) {
-      return false;
-    }
-    const hostId = app.STATE.syncState.hostClientId || app.STATE.clientId;
-    return hostId === app.STATE.clientId;
-  };
-
-  const prunePeers = function prunePeers() {
-    const now = Date.now();
-    if (!app.STATE.playerSync || !app.STATE.playerSync.peers) {
-      return;
-    }
-    for (const [clientId, peer] of Object.entries(app.STATE.playerSync.peers)) {
-      if (!peer || typeof peer.seenAt !== 'number' || now - peer.seenAt > PRESENCE_TTL_MS) {
-        delete app.STATE.playerSync.peers[clientId];
-      }
-    }
-  };
-
-  const recalcHost = function recalcHost() {
-    const now = Date.now();
-    const candidates = [{ clientId: app.STATE.clientId, seenAt: now }];
-
-    const peers = app.STATE.playerSync && app.STATE.playerSync.peers ? app.STATE.playerSync.peers : {};
-    for (const [clientId, peer] of Object.entries(peers)) {
-      if (peer && peer.seenAt && now - peer.seenAt <= PRESENCE_TTL_MS) {
-        candidates.push({ clientId, seenAt: peer.seenAt });
-      }
-    }
-
-    candidates.sort((left, right) => {
-      if (left.clientId === right.clientId) {
-        return right.seenAt - left.seenAt;
-      }
-      return left.clientId.localeCompare(right.clientId);
-    });
-
-    app.STATE.syncState.hostClientId = candidates[0] ? candidates[0].clientId : app.STATE.clientId;
-    app.STATE.playerSync.isHost = app.STATE.syncState.hostClientId === app.STATE.clientId;
-    app.STATE.syncState.hostUpdatedAt = Date.now();
-  };
-
-  const cleanupOldCommands = function cleanupOldCommands() {
-    const now = Date.now();
-    const pending = app.STATE.syncState.pendingCommandIds;
-    for (const [commandId, commandAt] of Object.entries(pending)) {
-      if (!commandAt || now - commandAt > COMMAND_TTL_MS) {
-        delete pending[commandId];
-      }
-    }
-  };
-
-  const shouldIgnoreCommand = function shouldIgnoreCommand(commandId) {
-    if (!commandId) {
-      return true;
-    }
-    const pending = app.STATE.syncState.pendingCommandIds;
-    if (pending[commandId]) {
-      return true;
-    }
-    pending[commandId] = Date.now();
-    cleanupOldCommands();
-    return false;
-  };
-
-  const ensureChannel = function ensureChannel() {
-    const roomId = app.STATE.roomId;
-    const channelName = roomId ? getChannelName(roomId) : '';
-    if (!roomId || !channelName) {
-      return null;
-    }
-    if (channel && channel.name === channelName) {
-      return channel;
-    }
-    if (channel) {
-      try {
-        channel.close();
-      } catch (_error) {
-        // ignore
-      }
-    }
-
-    channel = new BroadcastChannel(channelName);
-    channel.addEventListener('message', (event) => {
-      if (!event || !event.data) {
-        return;
-      }
-      onBroadcastMessage(event.data);
-    });
-    return channel;
-  };
-
-  const broadcastPresence = function broadcastPresence() {
-    const syncChannel = ensureChannel();
-    if (!syncChannel || !app.STATE.roomId) {
-      return;
-    }
-
-    const payload = {
-      eventType: 'presence',
-      from: app.STATE.clientId || '',
-      roomId: app.STATE.roomId,
-      seenAt: Date.now(),
-      media: toPlaybackSnapshot(),
-      transportSource: app.STATE.transport.source,
-    };
-    syncChannel.postMessage(payload);
-  };
-
-  const broadcastPlaybackState = function broadcastPlaybackState(playbackState, source) {
-    if (!isHost()) {
-      return;
-    }
-    const syncChannel = ensureChannel();
-    if (!syncChannel || !app.STATE.roomId || !playbackState) {
-      return;
-    }
-
-    const command = {
-      eventType: 'command',
-      commandType: 'playback',
-      commandId: makeCommandId(),
-      from: app.STATE.clientId,
-      roomId: app.STATE.roomId,
-      sentAt: Date.now(),
-      source: source || 'media',
-      playback: playbackState,
-    };
-    syncChannel.postMessage(command);
-  };
-
-  const applyPlaybackSnapshot = function applyPlaybackSnapshot(playbackState, source) {
-    if (!playbackState) {
-      return;
-    }
-
-    const commandId = source?.commandId;
-    if (commandId && shouldIgnoreCommand(commandId)) {
-      return;
-    }
-
-    if (!mediaElement) {
-      setMediaTrackMeta(playbackState);
-      if (playbackState.trackUrl && playbackState.trackUrl !== window.location.href) {
-        app.debugWarn && app.debugWarn('[playerSync] no media element, fallback to URL sync', playbackState.trackUrl);
-        window.history.replaceState({}, '', playbackState.trackUrl);
-      }
-      return;
-    }
-
-    if (!currentlyApplying && source && source.eventType === 'command' && source.from !== app.STATE.clientId) {
-      currentlyApplying = true;
-    }
-
-    const localTrackId = getCurrentTrackIdFromLocation();
-    const targetTrackId = String(playbackState.trackId || '').trim();
-    const targetUrl = String(playbackState.trackUrl || '').trim();
-    if (targetUrl && targetUrl !== window.location.href && targetTrackId && localTrackId && targetTrackId !== localTrackId) {
-      window.history.replaceState({}, '', targetUrl);
-      setTimeout(() => {
-        app.debug && app.debug('[playerSync] navigation to synced track');
-      }, 0);
-    }
-
-    const targetPosition = parseNum(playbackState.position);
-    const currentPosition = parseNum(mediaElement.currentTime);
-    if (Math.abs(currentPosition - targetPosition) > DRIFT_THRESHOLD_SEC) {
-      mediaElement.currentTime = targetPosition;
-    }
-
-    if (typeof playbackState.duration === 'number' && playbackState.duration > 0) {
-      app.STATE.playerSync.mediaDuration = playbackState.duration;
-    }
-
-    if (typeof playbackState.paused === 'boolean' && mediaElement.paused !== playbackState.paused) {
-      if (playbackState.paused) {
-        mediaElement.pause();
-      } else {
-        mediaElement.play().catch(() => {
-          // play may fail due to page policy
-        });
-      }
-    }
-
-    app.STATE.playerSync.mediaTrackId = targetTrackId || localTrackId;
-    app.STATE.playerSync.mediaPosition = targetPosition;
-    app.STATE.playerSync.mediaPaused = Boolean(playbackState.paused);
-    app.updateTransportHealth({
-      status: 'connected',
-      source: source?.transportSource || 'broadcast',
-      lastEventAt: Date.now(),
-      lastTrackId: targetTrackId,
-    });
-
-    window.setTimeout(() => {
-      currentlyApplying = false;
-    }, 1200);
-  };
-
-  const onBroadcastMessage = function onBroadcastMessage(data) {
-    if (!data || typeof data !== 'object') {
-      return;
-    }
-    if (data.roomId && data.roomId !== app.STATE.roomId) {
-      return;
-    }
-    if (data.eventType === 'presence') {
-      if (data.from && data.from !== app.STATE.clientId && data.seenAt) {
-        app.STATE.playerSync.peers[data.from] = {
-          seenAt: data.seenAt,
-          media: data.media || null,
-        };
-        prunePeers();
-        recalcHost();
-      }
-      return;
-    }
-    if (data.eventType === 'command' && data.commandType === 'playback') {
-      if (isHost()) {
-        return;
-      }
-      applyPlaybackSnapshot(data.playback, data);
-      return;
-    }
-  };
-
-  const normalizeTransportEvent = function normalizeTransportEvent(payload) {
-    if (!payload || typeof payload !== 'object') {
-      return null;
-    }
-    if (payload.eventType === 'playback' && payload.playback && typeof payload.playback === 'object') {
-      return {
-        trackId: String(payload.playback.trackId || '').trim(),
-        trackUrl: String(payload.playback.trackUrl || '').trim(),
-        position: parseNum(payload.playback.position),
-        duration: parseNum(payload.playback.duration),
-        paused: Boolean(payload.playback.paused),
-      };
-    }
-    if (payload.eventType === 'raw' && payload.payload && typeof payload.payload === 'object') {
-      return {
-        trackId: extractTrackId(payload.payload),
-        trackUrl: String(payload.url || '').trim(),
-        position: parseNum(payload.payload.position || payload.payload.currentTime),
-        duration: parseNum(payload.payload.duration),
-        paused: Boolean(payload.payload.paused),
-      };
-    }
-    return null;
-  };
-
-  const onTransportMessage = function onTransportMessage(payload) {
-    if (!payload || typeof payload !== 'object') {
-      return;
-    }
-
-    if (payload.type && payload.type === 'bridge-ready') {
-      app.updateTransportHealth({ status: 'ready', source: 'pageHook', lastEventAt: Date.now() });
-      return;
-    }
-
-    if (payload.eventType === 'transport-health') {
-      app.updateTransportHealth({
-        status: payload.status || 'unknown',
-        source: payload.source || 'ynison',
-        lastEventAt: Date.now(),
-        error: payload.error,
-      });
-      return;
-    }
-
-    const playback = normalizeTransportEvent(payload);
-    if (!playback) {
-      return;
-    }
-
-    app.STATE.playerSync.mediaTrackId = playback.trackId || app.STATE.playerSync.mediaTrackId;
-    app.STATE.playerSync.mediaPosition = playback.position || 0;
-    app.STATE.playerSync.mediaPaused = Boolean(playback.paused);
-    if (playback.duration) {
-      app.STATE.playerSync.mediaDuration = playback.duration;
-    }
-    app.STATE.playerSync.lastCommandAt = Date.now();
-    app.updateTransportHealth({
-      status: 'connected',
-      source: payload.source || 'ynison',
-      lastEventAt: Date.now(),
-      lastTrackId: playback.trackId || '',
-    });
-
-    setMediaTrackMeta(playback);
-    if (isHost()) {
-      broadcastPlaybackState(playback, payload.source || 'ynison');
-      return;
-    }
-
-    applyPlaybackSnapshot(playback, { eventType: 'transport', transportSource: payload.source });
-  };
-
-  const onLocalMediaChange = function onLocalMediaChange() {
-    if (!mediaElement || currentlyApplying) {
-      return;
-    }
-    const now = Date.now();
-    if (now - lastBroadcastAt < LOCAL_BROADCAST_THROTTLE_MS) {
-      return;
-    }
-    const snapshot = toPlaybackSnapshot();
-    if (!snapshot) {
-      return;
-    }
-    lastBroadcastAt = now;
-    app.STATE.playerSync.mediaTrackId = snapshot.trackId;
-    app.STATE.playerSync.mediaPosition = snapshot.position;
-    app.STATE.playerSync.mediaPaused = snapshot.paused;
-    app.STATE.playerSync.mediaDuration = snapshot.duration;
-
-    if (isHost()) {
-      broadcastPlaybackState(snapshot, 'local-media');
-    }
-  };
-
-  const bindMediaElement = function bindMediaElement(media) {
-    if (!media || media.__ymSyncBound) {
-      return;
-    }
-    media.__ymSyncBound = true;
-
-    media.addEventListener('play', onLocalMediaChange);
-    media.addEventListener('pause', onLocalMediaChange);
-    media.addEventListener('seeked', onLocalMediaChange);
-    media.addEventListener('timeupdate', onLocalMediaChange);
-    media.addEventListener('ended', onLocalMediaChange);
-  };
-
-  const updateMediaElement = function updateMediaElement() {
-    const next = document.querySelector('audio,video');
-    if (!next || next === mediaElement) {
-      return;
-    }
-    mediaElement = next;
-    bindMediaElement(mediaElement);
-    onLocalMediaChange();
-  };
-
-  const startWatchers = function startWatchers() {
-    if (!mediaWatchTimer) {
-      mediaWatchTimer = window.setInterval(updateMediaElement, 1_000);
-    }
-    updateMediaElement();
-    if (mediaObserver) {
-      return;
-    }
-    mediaObserver = new MutationObserver(() => {
-      updateMediaElement();
-    });
-    mediaObserver.observe(document.documentElement, {
-      subtree: true,
-      childList: true,
-      attributes: true,
-      attributeFilter: ['src'],
-    });
-  };
-
-  const startPresenceLoop = function startPresenceLoop() {
-    if (presenceTimer) {
-      return;
-    }
-    presenceTimer = window.setInterval(() => {
-      if (!app.STATE.roomId) {
-        return;
-      }
-      prunePeers();
-      recalcHost();
-      broadcastPresence();
-    }, PRESENCE_INTERVAL_MS);
-  };
-
-  app.installPlayerSync = function installPlayerSync() {
-    if (app.STATE.__playerSyncInstalled) {
-      return;
-    }
-    app.STATE.__playerSyncInstalled = true;
-    app.STATE.playerSync = app.STATE.playerSync || {};
-    app.STATE.playerSync.peers = app.STATE.playerSync.peers || {};
-    app.STATE.playerSync.mediaTrackId = '';
-    app.STATE.playerSync.mediaPosition = 0;
-    app.STATE.playerSync.mediaDuration = 0;
-    app.STATE.playerSync.mediaPaused = true;
-    app.STATE.playerSync.lastCommandAt = 0;
-    logInitializationObjects();
-
-    app.setTransportEventHandler(onTransportMessage);
-    recalcHost();
-    startWatchers();
-    startPresenceLoop();
-    ensureChannel();
-    const snapshot = toPlaybackSnapshot();
-    setMediaTrackMeta(snapshot || {});
-    if (isHost()) {
-      broadcastPlaybackState(snapshot || {}, 'sync-start');
-    }
-    app.render();
-  };
 })();

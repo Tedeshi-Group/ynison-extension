@@ -8,6 +8,7 @@
     "32": "icons/icon_32x32.png",
     "48": "icons/icon_48x48.png"
   },
+  "action": { "default_icon": "icons/icon_48x48.png"},
   "content_scripts": [
     {
       "matches": ["https://music.yandex.ru/*", "https://music.yandex.com/*"],
@@ -15,7 +16,7 @@
         "content/state.js",
         "content/roomUi.js",
         "content/clientApi.js",
-        "content/playerSync.js",
+        "content/playerSyncBroadcastBridge.js",
         "content/bootstrap.js"
       ],
       "css": ["styles.css"],

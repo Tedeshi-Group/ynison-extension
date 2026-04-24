@@ -41,7 +41,7 @@
     clientId: '',
     roomState: null,
     roomRole: 'listener',
-  joinRoleHint: '',
+    joinRoleHint: '',
     roomPermissions: {
       isHost: false,
       canControl: false,
@@ -58,6 +58,12 @@
     isBusy: false,
     lastError: '',
     avatarWatcherStarted: false,
+    transport: {
+      source: 'unknown',
+      lastEventAt: 0,
+      health: null,
+      eventHandler: null,
+    },
   };
 
   app.UI = {
@@ -363,40 +369,102 @@
     };
   };
 
-app.getBackendMode = function getBackendMode() {
-  try {
-    const value = localStorage.getItem(app.constants.STORAGE_BACKEND_MODE_KEY);
-    const mode = String(value || '').trim().toLowerCase();
-    if (mode === 'lan' || mode === '1' || mode === 'true' || mode === 'on' || mode === 'yes') {
-      return 'lan';
+  app.getBackendMode = function getBackendMode() {
+    try {
+      const value = localStorage.getItem(app.constants.STORAGE_BACKEND_MODE_KEY);
+      const mode = String(value || '').trim().toLowerCase();
+      if (mode === 'lan' || mode === '1' || mode === 'true' || mode === 'on' || mode === 'yes') {
+        return 'lan';
+      }
+      if (mode === 'production' || mode === 'prod' || mode === '0' || mode === 'false' || mode === 'off' || mode === 'no') {
+        return app.constants.BACKEND_MODE_DEFAULT;
+      }
+    } catch (_error) {
+      // localStorage can be unavailable in restricted contexts.
     }
-    if (mode === 'production' || mode === 'prod' || mode === '0' || mode === 'false' || mode === 'off' || mode === 'no') {
-      return app.constants.BACKEND_MODE_DEFAULT;
+    return app.constants.BACKEND_MODE_DEFAULT;
+  };
+
+  app.getBackendConfig = function getBackendConfig() {
+    const mode = app.getBackendMode();
+    const presets = app.constants.BACKEND_MODES || {};
+    return presets[mode] || presets[app.constants.BACKEND_MODE_DEFAULT];
+  };
+
+  app.applyBackendConfig = function applyBackendConfig() {
+    const config = app.getBackendConfig();
+    if (!config) {
+      return null;
     }
-  } catch (_error) {
-    // localStorage can be unavailable in restricted contexts.
-  }
-  return app.constants.BACKEND_MODE_DEFAULT;
-};
+    app.constants.API_ORIGIN = config.API_ORIGIN || app.constants.API_ORIGIN;
+    app.constants.API_HTTP_URL = config.API_HTTP_URL || app.constants.API_HTTP_URL;
+    app.constants.API_WS_URL = config.API_WS_URL || app.constants.API_WS_URL;
+    return config;
+  };
 
-app.getBackendConfig = function getBackendConfig() {
-  const mode = app.getBackendMode();
-  const presets = app.constants.BACKEND_MODES || {};
-  return presets[mode] || presets[app.constants.BACKEND_MODE_DEFAULT];
-};
+  app.applyBackendConfig();
 
-app.applyBackendConfig = function applyBackendConfig() {
-  const config = app.getBackendConfig();
-  if (!config) {
-    return null;
-  }
-  app.constants.API_ORIGIN = config.API_ORIGIN || app.constants.API_ORIGIN;
-  app.constants.API_HTTP_URL = config.API_HTTP_URL || app.constants.API_HTTP_URL;
-  app.constants.API_WS_URL = config.API_WS_URL || app.constants.API_WS_URL;
-  return config;
-};
+  app.getTransportState = function getTransportState() {
+    if (!app.STATE.transport || typeof app.STATE.transport !== 'object') {
+      app.STATE.transport = {
+        source: 'unknown',
+        lastEventAt: 0,
+        health: null,
+        eventHandler: null,
+      };
+    }
+    return app.STATE.transport;
+  };
 
-app.applyBackendConfig();
+  app.getTransportSource = function getTransportSource() {
+    const transport = app.getTransportState();
+    const normalized = String(transport.source || '').trim();
+    return normalized || 'unknown';
+  };
+
+  app.setTransportSource = function setTransportSource(source) {
+    const transport = app.getTransportState();
+    const normalized = String(source || '').trim();
+    transport.source = normalized || 'unknown';
+    transport.lastEventAt = Date.now();
+    return transport.source;
+  };
+
+  app.updateTransportHealth = function updateTransportHealth(payload = {}) {
+    const transport = app.getTransportState();
+    transport.health = {
+      status: String(payload.status || transport.health?.status || 'unknown').trim() || 'unknown',
+      source: String(payload.source || transport.source || 'unknown').trim() || 'unknown',
+      lastEventAt: Number(payload.lastEventAt) || Date.now(),
+      error: payload.error,
+    };
+    transport.lastEventAt = transport.health.lastEventAt;
+    return transport.health;
+  };
+
+  app.setTransportEventHandler = function setTransportEventHandler(handler) {
+    const transport = app.getTransportState();
+    if (typeof handler === 'function') {
+      transport.eventHandler = handler;
+      return true;
+    }
+    transport.eventHandler = null;
+    return false;
+  };
+
+  app.getTransportEventHandler = function getTransportEventHandler() {
+    return app.getTransportState().eventHandler || null;
+  };
+
+  app.emitTransportMessage = function emitTransportMessage(payload) {
+    const handler = app.getTransportEventHandler();
+    if (typeof handler !== 'function') {
+      return false;
+    }
+    handler(payload);
+    return true;
+  };
+
 
   app.getSelfParticipant = function getSelfParticipant() {
     if (!app.STATE.roomState || !Array.isArray(app.STATE.roomState.participants)) {
