@@ -38,17 +38,12 @@
     hostMediaElement: null,
   };
 
-  const LISTENER_SEARCH_UI_XPATH = {
-    SIDEBAR_SEARCH_LINK:
-      '/html/body/div[3]/div/div/aside/div/div[2]/div/nav/ol/li[2]/a',
-    SEARCH_INPUT_HOST:
-      '/html/body/div[3]/div/div/div/main/div[1]/div[1]/div',
-    FIRST_RESULT_PLAY:
-      '/html/body/div[3]/div/div/div/main/div[1]/div[2]/div/div/div/div/div/div[1]/div[1]/div/div/button',
+  const LISTENER_SEARCH_UI_SELECTORS = {
+    SIDEBAR_SEARCH_LINK_SELECTOR: 'a[href="/search"], a[href="/search/"], a[href*="/search?"], a[href*="/search/"]',
   };
 
-  const LISTENER_PLAYER_BAR_XPATH = {
-    SEEK_INPUT: '/html/body/div[3]/div/div/section[1]/div/div[1]',
+  const LISTENER_PLAYER_BAR_SELECTORS = {
+    SEEK_INPUT: 'section[class*="PlayerBarDesktopWithBackgroundProgressBar_"] input[type="range"]',
   };
 
   const listenerUiState = {
@@ -619,11 +614,9 @@
     if (scored) {
       return scored;
     }
-    if (typeof app.queryXPathFirst === 'function') {
-      const byPath = app.queryXPathFirst(LISTENER_PLAYER_BAR_XPATH.SEEK_INPUT);
-      if (byPath && byPath.tagName === 'INPUT' && String(byPath.type || '').toLowerCase() === 'range') {
-        return byPath;
-      }
+    const byBarSelector = document.querySelector(LISTENER_PLAYER_BAR_SELECTORS.SEEK_INPUT);
+    if (byBarSelector && byBarSelector.tagName === 'INPUT' && String(byBarSelector.type || '').toLowerCase() === 'range') {
+      return byBarSelector;
     }
     const root = app.getPlayerBar();
     if (root) {
@@ -1165,18 +1158,55 @@
   };
 
   const findListenerSearchInput = function findListenerSearchInput() {
-    const host = app.queryXPathFirst(LISTENER_SEARCH_UI_XPATH.SEARCH_INPUT_HOST);
-    if (host) {
-      const nested = host.querySelector(
-        'input[type="search"], input[type="text"], input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea',
-      );
-      if (nested) {
-        return nested;
-      }
-    }
-    return document.querySelector(
-      '[class*="SearchPage_input"] input, input[type="search"], input[placeholder]',
+    const bySearchContainer = document.querySelector(
+      '[role="search"] input[type="search"], [role="search"] input[type="text"], [role="search"] textarea',
     );
+    if (bySearchContainer && bySearchContainer.type !== 'hidden') {
+      return bySearchContainer;
+    }
+
+    const bySearchForm = document.querySelector(
+      'form[action*="/search"] input[type="search"], form[action*="/search"] input[type="text"], form[action*="/search"] textarea',
+    );
+    if (bySearchForm && bySearchForm.type !== 'hidden') {
+      return bySearchForm;
+    }
+
+    const byPlaceholderOrAria = document.querySelector(
+      'input[placeholder*="поиск" i], input[aria-label*="поиск" i], input[placeholder*="search" i], input[aria-label*="search" i]',
+    );
+    if (byPlaceholderOrAria && byPlaceholderOrAria.type !== 'hidden') {
+      return byPlaceholderOrAria;
+    }
+
+    return document.querySelector(
+      'input[type="search"], input[placeholder], input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea',
+    );
+  };
+
+  const findSearchPageLink = function findSearchPageLink() {
+    const candidates = Array.from(
+      document.querySelectorAll(LISTENER_SEARCH_UI_SELECTORS.SIDEBAR_SEARCH_LINK_SELECTOR),
+    );
+    const links = candidates.length > 0
+      ? candidates
+      : Array.from(document.querySelectorAll('a[href]'));
+    const byPath = links.find((link) => {
+      const rawHref = link.getAttribute('href');
+      if (!rawHref) {
+        return false;
+      }
+      try {
+        const path = new URL(rawHref, window.location.origin).pathname;
+        return path === '/search' || path === '/search/' || path.startsWith('/search/');
+      } catch (_err) {
+        return false;
+      }
+    });
+    if (byPath) {
+      return byPath;
+    }
+    return links.find((link) => /поиск|search/i.test(link.textContent || ''));
   };
 
   app.resetListenerTrackAutomation = function resetListenerTrackAutomation() {
@@ -1197,7 +1227,7 @@
     }
 
     if (!window.location.pathname.includes('/search')) {
-      const link = app.queryXPathFirst(LISTENER_SEARCH_UI_XPATH.SIDEBAR_SEARCH_LINK);
+      const link = findSearchPageLink();
       if (link && typeof link.click === 'function') {
         link.click();
         await app.waitFor(
@@ -1241,10 +1271,178 @@
     }));
   };
 
+  const searchLog = function searchLog(...args) {
+    if (typeof console !== 'undefined' && console && typeof console.log === 'function') {
+      console.log('[ymSync][search]', ...args);
+    }
+  };
+
+  const initLog = function initLog(...args) {
+    if (typeof console !== 'undefined' && console && typeof console.log === 'function') {
+      console.log('[ymSync][init]', ...args);
+    }
+  };
+
+  const isPlayActionLabel = function isPlayActionLabel(label) {
+    if (!label) {
+      return false;
+    }
+    return /(?:^|\b)(play|воспроизв\w*)/i.test(label) && !/\bpause\b|пауза/i.test(label);
+  };
+
+  const getSearchResultsContainer = function getSearchResultsContainer() {
+    const searchInput = findListenerSearchInput();
+    if (searchInput) {
+      const byInputScope = searchInput.closest('[class*="SearchPage"]')
+        || searchInput.closest('main')
+        || searchInput.closest('section')
+        || searchInput.closest('form');
+      if (byInputScope) {
+        return byInputScope;
+      }
+    }
+    return document.querySelector('[class*="SearchPage"]')
+      || document.querySelector('[role="search"]')
+      || document.querySelector('main')
+      || document.body;
+  };
+
+  const getFirstCandidatePlayButton = function getFirstCandidatePlayButton(buttons) {
+    if (!buttons || buttons.length === 0) {
+      return null;
+    }
+    const playable = buttons.find((button) => isPlayActionLabel(button.getAttribute('aria-label') || ''));
+    return playable || buttons[0];
+  };
+
+  const findPlayButtonInSearchResults = function findPlayButtonInSearchResults() {
+    const scope = getSearchResultsContainer();
+    const selectors = [
+      'button[class*="PlayButtonWithCover_"]',
+      '[aria-label*="play" i][class*="playButton"]',
+      'button[data-testid*="play"]',
+    ];
+    const all = [];
+    for (let i = 0; i < selectors.length; i += 1) {
+      const nodes = Array.from(scope.querySelectorAll(selectors[i]));
+      for (let j = 0; j < nodes.length; j += 1) {
+        const node = nodes[j];
+        if (node && node.tagName === 'BUTTON' && !node.closest('aside')) {
+          all.push(node);
+        }
+      }
+    }
+    const uniqueButtons = Array.from(new Set(all));
+    if (uniqueButtons.length === 0) {
+      return null;
+    }
+    const firstInScope = uniqueButtons[0];
+    searchLog('findPlayButtonInSearchResults: raw candidates', uniqueButtons.length, firstInScope.className?.slice(0, 120));
+    return getFirstCandidatePlayButton(uniqueButtons);
+  };
+
+  const logSearchCandidates = function logSearchCandidates(sourceName, buttons) {
+    if (!buttons || buttons.length === 0) {
+      searchLog(sourceName, 'no candidates');
+      return;
+    }
+    searchLog(sourceName, 'candidates', buttons.length, buttons.map((button) => button.className?.slice(0, 120)));
+  };
+
+  const lastClickContext = {
+    button: null,
+    at: 0,
+  };
+
+  const describeNodeForLog = function describeNodeForLog(node) {
+    if (!node) {
+      return null;
+    }
+    const item = {
+      tag: node.tagName || '(no-tag)',
+      id: node.id || '',
+      className: (node.className || '').toString().slice(0, 180),
+      text: (node.textContent || '').trim().slice(0, 120),
+      href: node.href || '',
+    };
+    if (node instanceof HTMLInputElement) {
+      item.type = node.type || '';
+      item.placeholder = node.placeholder || '';
+      item.name = node.name || '';
+      item.ariaLabel = node.getAttribute('aria-label') || '';
+      item.value = node.value || '';
+    }
+    return item;
+  };
+
+  const logInitializationObjects = function logInitializationObjects() {
+    const candidates = {
+      searchLinks: Array.from(document.querySelectorAll(LISTENER_SEARCH_UI_SELECTORS.SIDEBAR_SEARCH_LINK_SELECTOR)),
+      playButtons: Array.from(document.querySelectorAll('button[class*="PlayButtonWithCover_"]')),
+      seekInputs: Array.from(document.querySelectorAll('input[type="range"]')),
+    };
+
+    const resolved = {
+      searchLink: findSearchPageLink(),
+      searchInput: findListenerSearchInput(),
+      playerBar: app.getPlayerBar(),
+      seekRange: app.findPlayerSeekRange(),
+      searchPlayButton: app.findSearchPlayButton(),
+      fullscreenControlsRoot: findFullscreenControlsRoot(),
+      fullscreenMedia: findFullscreenMediaElement(),
+    };
+
+    initLog('initialization found objects');
+    initLog('search links candidates', candidates.searchLinks.length, candidates.searchLinks.map(describeNodeForLog));
+    initLog('play button candidates', candidates.playButtons.length, candidates.playButtons.map(describeNodeForLog));
+    initLog('seek range candidates', candidates.seekInputs.length);
+    initLog('resolved searchLink', describeNodeForLog(resolved.searchLink));
+    initLog('resolved searchInput', describeNodeForLog(resolved.searchInput));
+    initLog('resolved playerBar', describeNodeForLog(resolved.playerBar));
+    initLog('resolved seekRange', describeNodeForLog(resolved.seekRange));
+    initLog('resolved searchPlayButton', describeNodeForLog(resolved.searchPlayButton));
+    initLog('resolved fullscreenControlsRoot', describeNodeForLog(resolved.fullscreenControlsRoot));
+    initLog('resolved fullscreenMedia', describeNodeForLog(resolved.fullscreenMedia));
+  };
+
+  const findPlayButtonByClassPrefix = function findPlayButtonByClassPrefix() {
+    const buttons = document.querySelectorAll('button[class*="PlayButtonWithCover_"]');
+    if (buttons.length > 0) {
+      const arr = Array.from(buttons);
+      logSearchCandidates('findPlayButtonByClassPrefix', arr);
+      return getFirstCandidatePlayButton(arr);
+    }
+    searchLog('findPlayButtonByClassPrefix: none');
+    return null;
+  };
+
   app.findSearchPlayButton = function findSearchPlayButton() {
-    return document.querySelector('button[class*="PlayButtonWithCover_playButton"]')
-      || document.querySelector('[aria-label*="play" i][class*="playButton"]')
-      || document.querySelector('button[data-testid*="play"]');
+    const bySearchResults = findPlayButtonInSearchResults();
+    if (bySearchResults) {
+      searchLog('findSearchPlayButton: selected inside search results');
+      return bySearchResults;
+    }
+
+    const byCover = findPlayButtonByClassPrefix();
+    if (byCover) {
+      searchLog('findSearchPlayButton: selected by PlayButtonWithCover_');
+      return byCover;
+    }
+
+    const byAria = document.querySelector('[aria-label*="play" i][class*="playButton"]');
+    if (byAria) {
+      searchLog('findSearchPlayButton: selected by aria-label+playButton');
+      return byAria;
+    }
+
+    const byTestId = document.querySelector('button[data-testid*="play"]');
+    if (byTestId) {
+      searchLog('findSearchPlayButton: selected by data-testid');
+      return byTestId;
+    }
+
+    searchLog('findSearchPlayButton: no candidate');
+    return null;
   };
 
   const simulatePointerHover = function simulatePointerHover(target) {
@@ -1289,56 +1487,96 @@
   };
 
   const hoverFirstSearchResultRow = function hoverFirstSearchResultRow() {
-    const playXPath = LISTENER_SEARCH_UI_XPATH.FIRST_RESULT_PLAY;
-    const hostPath = playXPath.replace(/\/button\/?$/i, '');
-    let node = app.queryXPathFirst(hostPath);
+    searchLog('hoverFirstSearchResultRow: start');
+    let node = app.findSearchPlayButton();
     if (!node) {
+      searchLog('hoverFirstSearchResultRow: fallback by SearchPage track selector');
       node = document.querySelector('[class*="SearchPage"] [class*="track"]')
         || document.querySelector('[class*="SearchPage"] li[class*="item"]');
+      if (!node) {
+        searchLog('hoverFirstSearchResultRow: no track fallback found');
+      } else {
+        searchLog('hoverFirstSearchResultRow: fallback node', node.tagName, node.className?.slice(0, 120));
+      }
+    } else {
+      searchLog('hoverFirstSearchResultRow: primary node', node.tagName, node.className?.slice(0, 120));
+    }
+    if (!node) {
+      return;
     }
     let depth = 0;
     while (node && depth < 6) {
       simulatePointerHover(node);
+      if (depth === 0) {
+        searchLog('hoverFirstSearchResultRow: hovering', node.tagName, node.className?.slice(0, 120));
+      }
       node = node.parentElement;
       depth += 1;
     }
   };
 
   app.clickFirstResult = async function clickFirstResult() {
+    searchLog('clickFirstResult: start');
     await app.sleep(750);
     hoverFirstSearchResultRow();
     await app.sleep(150);
 
     const resolvePlayButton = () => {
-      let btn = app.queryXPathFirst(LISTENER_SEARCH_UI_XPATH.FIRST_RESULT_PLAY);
-      if (!btn || btn.tagName !== 'BUTTON') {
-        btn = app.findSearchPlayButton();
+      const btn = app.findSearchPlayButton();
+      if (!btn) {
+        searchLog('resolvePlayButton: no button found by findSearchPlayButton');
+      } else {
+        searchLog(
+          'resolvePlayButton: candidate',
+          btn.tagName,
+          btn.className?.slice(0, 120),
+          'aria-label=',
+          btn.getAttribute('aria-label'),
+        );
       }
       return btn && btn.tagName === 'BUTTON' ? btn : null;
     };
 
     let button = resolvePlayButton();
+    searchLog('clickFirstResult: attempt#1', button ? 'ok' : 'empty');
     if (!button) {
       hoverFirstSearchResultRow();
       await app.sleep(120);
       button = resolvePlayButton();
+      searchLog('clickFirstResult: attempt#2', button ? 'ok' : 'empty');
     }
     if (!button) {
       button = await app.waitFor(resolvePlayButton, 2500, 120);
+      searchLog('clickFirstResult: attempt#3(waitFor)', button ? 'ok' : 'empty');
     }
     if (!button) {
       hoverFirstSearchResultRow();
       await app.sleep(180);
       button = resolvePlayButton();
+      searchLog('clickFirstResult: attempt#4', button ? 'ok' : 'empty');
     }
     if (!button) {
+      searchLog('clickFirstResult: failed, no button found');
       return false;
     }
 
     simulatePointerHover(button);
     await app.sleep(60);
     button.focus();
+    if (lastClickContext.button === button && Date.now() - lastClickContext.at < 1800) {
+      searchLog('clickFirstResult: duplicate click blocked to avoid immediate re-toggle');
+      return false;
+    }
+    searchLog(
+      'clickFirstResult: clicking',
+      button.className?.slice(0, 120),
+      'aria-label=',
+      button.getAttribute('aria-label'),
+    );
+    lastClickContext.button = button;
+    lastClickContext.at = Date.now();
     button.click();
+    searchLog('clickFirstResult: clicked');
     return true;
   };
 
@@ -2410,6 +2648,7 @@
     app.STATE.playerSync.mediaDuration = 0;
     app.STATE.playerSync.mediaPaused = true;
     app.STATE.playerSync.lastCommandAt = 0;
+    logInitializationObjects();
 
     app.setTransportEventHandler(onTransportMessage);
     recalcHost();
