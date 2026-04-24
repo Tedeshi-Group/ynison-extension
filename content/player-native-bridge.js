@@ -59,11 +59,47 @@
     return keys;
   };
 
+  var isMediaTag = function isMediaTag(value) {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    var tagName = String(value.tagName || '').toUpperCase();
+    return tagName === 'AUDIO' || tagName === 'VIDEO';
+  };
+
+  var hasPlayableSource = function hasPlayableSource(value) {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    if (safeGetValue(value, 'yaspSrc')) {
+      return true;
+    }
+    var track = safeGetValue(value, 'track');
+    return typeof track === 'object' && !!safeGetValue(track, 'yaspSrc');
+  };
+
   var emitReady = function emitReady(player, source) {
     if (!player) {
       return;
     }
-    if (window.__ymSyncNativePlayer) {
+    var shouldOverrideExisting = function shouldOverrideExisting(existingPlayer, candidatePlayer) {
+      if (!existingPlayer) {
+        return true;
+      }
+      if (existingPlayer === candidatePlayer) {
+        return false;
+      }
+      if (isMediaTag(existingPlayer) && !isMediaTag(candidatePlayer)) {
+        return true;
+      }
+      if (isMediaTag(existingPlayer) && !hasPlayableSource(existingPlayer) && hasPlayableSource(candidatePlayer)) {
+        return true;
+      }
+      return false;
+    };
+
+    var currentPlayer = safeGetValue(window, TARGET_PROPERTY);
+    if (currentPlayer && !shouldOverrideExisting(currentPlayer, player)) {
       return;
     }
     diagnostics.detected = true;
@@ -300,7 +336,7 @@
   var detectExisting = function detectExisting() {
     diagnostics.checks += 1;
     var player = window.__ymSyncNativePlayer;
-    if (player) {
+    if (player && (!isMediaTag(player) || hasPlayableSource(player))) {
       emitReady(player, 'preinitialized.windowProperty');
       return;
     }

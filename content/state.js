@@ -481,11 +481,14 @@ app.applyBackendConfig();
   };
 
   app.buildTrackFingerprint = function buildTrackFingerprint(track = {}) {
+    const trackId = String(
+      track.trackId || track.id || track.playableId || track.playable_id || ''
+    ).trim();
     const title = app.normalizeTrackText(track.title);
     const artists = Array.isArray(track.artists)
       ? track.artists.map((artist) => app.normalizeTrackText(artist))
       : [];
-    return `${title}::${artists.join('|')}`;
+    return `${trackId ? `${trackId}::` : ''}${title}::${artists.join('|')}`;
   };
 
   app.isHost = function isHost() {

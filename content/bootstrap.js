@@ -278,12 +278,37 @@
       return state.player || null;
     };
 
+    const isFallbackMediaPlayer = function isFallbackMediaPlayer(value) {
+      if (!value || typeof value !== 'object') {
+        return false;
+      }
+      const tagName = String(value.tagName || '').toUpperCase();
+      return tagName === 'AUDIO' || tagName === 'VIDEO';
+    };
+
+    const shouldReplacePlayer = function shouldReplacePlayer(existingPlayer, existingSource, nextPlayer, nextSource) {
+      if (!existingPlayer) {
+        return true;
+      }
+      if (isFallbackMediaPlayer(existingPlayer) && !isFallbackMediaPlayer(nextPlayer)) {
+        return true;
+      }
+      if (isFallbackMediaPlayer(existingPlayer) && nextSource === 'poll.windowProperty') {
+        return true;
+      }
+      return existingSource === 'fallback.mediaElement';
+    };
+
     const emitNativePlayer = function emitNativePlayer(player, source) {
-      if (state.player) {
+      const normalizedSource = source || 'unknown';
+      const isFallback = isFallbackMediaPlayer(player);
+      const nextSource = isFallback ? 'fallback.mediaElement' : normalizedSource;
+      if (state.player && !shouldReplacePlayer(state.player, state.source, player, nextSource)) {
         return;
       }
+
       state.player = player;
-      state.source = source || 'unknown';
+      state.source = nextSource;
       state.capturedAt = Date.now();
 
       state.waiters.forEach((resolve) => {
@@ -291,7 +316,7 @@
       });
       state.waiters.length = 0;
 
-      if (state.timer) {
+      if (state.timer && state.source !== 'fallback.mediaElement') {
         window.clearInterval(state.timer);
         state.timer = null;
       }
@@ -334,7 +359,7 @@
     };
 
     const checkNativePlayer = function checkNativePlayer() {
-      if (state.player) {
+      if (state.player && state.source !== 'fallback.mediaElement') {
         return;
       }
       detectNativePlayerProperty();

@@ -454,6 +454,15 @@
         ? normalizedTrack.durationSec
         : normalizedTrack.duration
     );
+    const trackId = String(
+      normalizedTrack.trackId || normalizedTrack.id || normalizedTrack.playableId || ''
+    ).trim();
+    const trackUrl = String(
+      normalizedTrack.trackUrl || normalizedTrack.url || normalizedState.trackUrl || normalizedState.mediaSrc || ''
+    ).trim();
+    const mediaSrc = String(
+      normalizedTrack.mediaSrc || normalizedTrack.src || normalizedState.mediaSrc || ''
+    ).trim();
     const stateDurationSec = normalizeNonNegativeNumber(
       Number.isFinite(Number(normalizedState.durationSec)) ? normalizedState.durationSec : trackDurationSec
     );
@@ -464,6 +473,9 @@
         title: normalizedTrack.title || '',
         artists: Array.isArray(normalizedTrack.artists) ? normalizedTrack.artists : [],
         durationSec: trackDurationSec,
+        ...(trackId ? { trackId } : {}),
+        ...(trackUrl ? { trackUrl } : {}),
+        ...(mediaSrc ? { mediaSrc } : {}),
       },
       state: {
         isPlaying: Boolean(normalizedState.isPlaying),
@@ -480,6 +492,16 @@
   };
 
   app.broadcastPlayback = function broadcastPlayback(state = {}) {
+    const normalizedState = state && typeof state === 'object' ? state : {};
+    const playbackTrackId = String(
+      normalizedState.trackId || normalizedState.id || normalizedState.playableId || ''
+    ).trim();
+    const playbackTrackUrl = String(
+      normalizedState.trackUrl || normalizedState.mediaSrc || normalizedState.url || ''
+    ).trim();
+    const playbackMediaSrc = String(
+      normalizedState.mediaSrc || normalizedState.src || ''
+    ).trim();
     const nextStateVersion = ++app.STATE.lastStateVersion;
     const payload = {
       stateVersion: nextStateVersion,
@@ -489,6 +511,9 @@
         durationSec: normalizeNonNegativeNumber(state.durationSec),
         positionAtServerMs: Number(state.positionAtServerMs || Date.now()),
         stateVersion: nextStateVersion,
+        ...(playbackTrackId ? { trackId: playbackTrackId } : {}),
+        ...(playbackTrackUrl ? { trackUrl: playbackTrackUrl } : {}),
+        ...(playbackMediaSrc ? { mediaSrc: playbackMediaSrc } : {}),
       },
     };
     app.sendApiMessage('PLAYBACK_STATE', payload);

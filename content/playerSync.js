@@ -60,6 +60,129 @@
 
   const SEEK_ARIA_RES = [/manage time code/i, /time code/i, /тайм[\s-]?код/i, /позици/i];
 
+  const getTrackIdFromLocationFallback = function getTrackIdFromLocationFallback() {
+    const path = window.location.pathname || '';
+    const query = window.location.search || '';
+    const pathMatch = path.match(/track\/(\d+)/i);
+    if (pathMatch && pathMatch[1]) {
+      return pathMatch[1];
+    }
+
+    const queryMatch = query.match(/(?:\?|&)track(?:Id)?=(\d+)/i);
+    if (queryMatch && queryMatch[1]) {
+      return queryMatch[1];
+    }
+
+    const meta = document.querySelector('meta[name="music:track_id"], meta[property="music:track_id"]');
+    const content = meta && meta.getAttribute('content');
+    if (content) {
+      return String(content).trim();
+    }
+
+    return '';
+  };
+
+  const resolveTrackUrlFromTrackId = function resolveTrackUrlFromTrackId(trackId) {
+    const normalized = String(trackId || '').trim();
+    if (!/^\d{6,}$/.test(normalized)) {
+      return '';
+    }
+    return `https://music.yandex.ru/track/${normalized}`;
+  };
+
+  const playerHasPlayableSource = function playerHasPlayableSource(player) {
+    if (!player || typeof player !== 'object') {
+      return false;
+    }
+    const fields = [
+      player.yaspSrc,
+      player.track && player.track.yaspSrc,
+      player.currentSrc,
+      player.src,
+      player.mediaSrc,
+      player.streamUrl,
+      player.stream_url,
+      player.url,
+      player.track && player.track.src,
+      player.track && player.track.url,
+      player.track && player.track.mediaSrc,
+    ];
+    return fields.some((value) => Boolean(value && String(value).trim()));
+  };
+
+  const resolveNativePlayer = function resolveNativePlayer() {
+    const appPlayer = typeof app.getNativePlayer === 'function'
+      ? app.getNativePlayer()
+      : null;
+    const windowPlayer = window.__ymSyncNativePlayer || null;
+    if (appPlayer && appPlayer !== windowPlayer && playerHasPlayableSource(windowPlayer) && !playerHasPlayableSource(appPlayer)) {
+      return windowPlayer;
+    }
+    if (appPlayer) {
+      return appPlayer;
+    }
+    return windowPlayer;
+  };
+
+  const resolveNativePlayerTrackId = function resolveNativePlayerTrackId() {
+    const player = resolveNativePlayer();
+    if (!player || typeof player !== 'object') {
+      return '';
+    }
+
+    const candidates = [
+      player.trackId,
+      player.track && player.track.id,
+      player.track && player.track.trackId,
+      player.playableId,
+      player.playable_id,
+      player.track_id,
+      player.id,
+    ];
+    for (const value of candidates) {
+      if (!value) {
+        continue;
+      }
+      const normalized = String(value).trim();
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    const yaspSrc = String(player.yaspSrc || '');
+    const match = yaspSrc.match(/\/(\d{6,})\//);
+    return match && match[1] ? match[1] : '';
+  };
+
+  const resolveNativePlayerSource = function resolveNativePlayerSource() {
+    const player = resolveNativePlayer();
+    if (!player || typeof player !== 'object') {
+      return '';
+    }
+
+    const candidateFields = [
+      player.yaspSrc,
+      player.track && player.track.yaspSrc,
+      player.currentSrc,
+      player.src,
+      player.mediaSrc,
+      player.track && player.track.src,
+      player.track && player.track.url,
+      player.track && player.track.mediaSrc,
+      player.streamUrl,
+      player.stream_url,
+      player.url,
+    ];
+    for (const value of candidateFields) {
+      const normalized = String(value || '').trim();
+      if (!normalized) {
+        continue;
+      }
+      return normalized;
+    }
+    return '';
+  };
+
   const isSeekRangeElementVisible = function isSeekRangeElementVisible(el) {
     if (!el || !el.isConnected) {
       return false;
@@ -636,7 +759,18 @@
   app.getTrackElements = function getTrackElements() {
     const root = app.getPlayerBar();
     if (!root) {
-      return { title: '', artists: [], durationSec: 0 };
+      const trackIdFromLocation = getTrackIdFromLocationFallback();
+      const nativeTrackId = resolveNativePlayerTrackId();
+      const nativeSource = resolveNativePlayerSource();
+      const trackId = nativeTrackId || trackIdFromLocation;
+      return {
+        title: '',
+        artists: [],
+        durationSec: 0,
+        trackId: trackId,
+        trackUrl: nativeSource || resolveTrackUrlFromTrackId(trackId) || window.location.href,
+        mediaSrc: nativeSource || '',
+      };
     }
 
     const titleElement = root.querySelector('[class*="Meta_title"]')
@@ -654,6 +788,22 @@
     const progressInput = app.findPlayerSeekRange();
     const durationSec = progressInput ? Number(progressInput.getAttribute('max')) || 0 : 0;
     const valueSec = progressInput ? Number(progressInput.value) || 0 : 0;
+    const mediaElement = document.querySelector('audio, video');
+    const nativeSource = resolveNativePlayerSource();
+    const mediaSrc = nativeSource || String(mediaElement ? mediaElement.getAttribute('src') || mediaElement.currentSrc || '' : '');
+    const mediaTrackId = mediaElement ? (
+      String(mediaElement.getAttribute('data-track-id') || mediaElement.getAttribute('data-ym-sync-track-id') || '')
+    ) : '';
+    const nativeTrackId = resolveNativePlayerTrackId();
+    const trackLink = root.querySelector('a[href*="/track/"]')
+      || document.querySelector('a[href*="/track/"]');
+    const trackLinkHref = trackLink ? String(trackLink.getAttribute('href') || '') : '';
+    const resolvedTrackLinkUrl = trackLinkHref ? String(new URL(trackLinkHref, window.location.href)) : '';
+    const pathTrackMatch = trackLinkHref.match(/track\/(\d+)/i);
+    const pathTrackId = pathTrackMatch && pathTrackMatch[1] ? pathTrackMatch[1] : '';
+    const trackId = String(nativeTrackId || mediaTrackId || pathTrackId || getTrackIdFromLocationFallback());
+    const resolvedTrackUrlFromId = resolveTrackUrlFromTrackId(trackId);
+    const trackUrl = mediaSrc || resolvedTrackLinkUrl || resolvedTrackUrlFromId || window.location.href;
 
     return {
       title,
@@ -661,6 +811,9 @@
       durationSec,
       elapsedSec: valueSec,
       progressInput,
+      trackId: trackId || '',
+      trackUrl,
+      mediaSrc,
     };
   };
 
@@ -745,9 +898,15 @@
     const mediaElement = document.querySelector('audio, video');
     const mediaState = mediaElement ? !mediaElement.paused : undefined;
     const mediaPosition = mediaElement && Number.isFinite(mediaElement.currentTime) ? mediaElement.currentTime : null;
+    const nativeSource = resolveNativePlayerSource();
+    const trackId = track.trackId || resolveNativePlayerTrackId();
+    const mediaSrc = track.mediaSrc || nativeSource || '';
     return {
       title: track.title,
       artists: track.artists,
+      trackId: track.trackId || '',
+      trackUrl: mediaSrc || resolveTrackUrlFromTrackId(trackId) || window.location.href,
+      mediaSrc: mediaSrc,
       durationSec: track.durationSec,
       positionSec: mediaPosition !== null ? mediaPosition : track.elapsedSec,
       isPlaying: typeof mediaState === 'boolean'
@@ -764,6 +923,9 @@
     const payload = {
       title: state.title,
       artists: state.artists,
+      trackId: state.trackId || '',
+      trackUrl: state.trackUrl || '',
+      mediaSrc: state.mediaSrc || '',
       durationSec: state.durationSec,
     };
     app.sendHostTrackUpdate(payload, state);
@@ -847,6 +1009,9 @@
     const trackChanged = fingerprint !== hostState.lastTrackFingerprint;
     const positionChanged = Math.abs(currentState.positionSec - (app.__lastSentPositionSec || 0)) >= 1;
     const stateNow = currentState.isPlaying;
+    const mediaTrackId = String(currentState.trackId || resolveNativePlayerTrackId() || '');
+    const playbackTrackUrl = String(currentState.mediaSrc || currentState.trackUrl || resolveNativePlayerSource() || window.location.href || '');
+    const playbackMediaSrc = String(currentState.mediaSrc || '');
 
     if (trackChanged) {
       hostState.lastTrackFingerprint = fingerprint;
@@ -855,6 +1020,9 @@
         title: currentState.title,
         artists: currentState.artists,
         durationSec: currentState.durationSec,
+        trackId: currentState.trackId || mediaTrackId,
+        trackUrl: currentState.trackUrl || playbackTrackUrl,
+        mediaSrc: currentState.mediaSrc || playbackMediaSrc,
       });
       app.__lastSentPositionSec = currentState.positionSec;
       app.broadcastHostPlaybackState({
@@ -863,6 +1031,9 @@
         durationSec: currentState.durationSec,
         positionAtServerMs: Date.now(),
         stateVersion: ++hostState.lastTrackMetaVersion,
+        ...(mediaTrackId ? { trackId: mediaTrackId } : {}),
+        ...(playbackTrackUrl ? { trackUrl: playbackTrackUrl } : {}),
+        ...(playbackMediaSrc ? { mediaSrc: playbackMediaSrc } : {}),
       });
       return;
     }
@@ -875,6 +1046,9 @@
         positionSec: currentState.positionSec,
         durationSec: currentState.durationSec,
         positionAtServerMs: Date.now(),
+        ...(mediaTrackId ? { trackId: mediaTrackId } : {}),
+        ...(playbackTrackUrl ? { trackUrl: playbackTrackUrl } : {}),
+        ...(playbackMediaSrc ? { mediaSrc: playbackMediaSrc } : {}),
       });
     }
   };
@@ -1780,7 +1954,104 @@
     }, 120);
   };
 
+  const isLikelyPlayableTrackUrl = function isLikelyPlayableTrackUrl(value) {
+    const candidate = String(value || '').trim();
+    if (!candidate) {
+      return false;
+    }
+    const withoutQuery = candidate.split('?')[0].split('#')[0].toLowerCase();
+    if (withoutQuery.includes('/track/')) {
+      return false;
+    }
+    return /\.(m3u8|mp3|m4a|aac|ogg|oga|wav|flac|webm|opus)(?:$|\?)/i.test(withoutQuery)
+      || withoutQuery.includes('/api/') || withoutQuery.includes('music-') || withoutQuery.includes('stream')
+      || withoutQuery.includes('strm.yandex.net') || withoutQuery.includes('music-v2/crypt')
+      || withoutQuery.includes('ysign');
+  };
+
+  const getTrackSourceCandidates = function getTrackSourceCandidates(track) {
+    const candidateMap = new Map();
+    const values = [
+      track?.yaspSrc,
+      track?.trackSrc,
+      track?.mediaSrc,
+      track?.src,
+      track?.url,
+      track?.trackUrl,
+      track?.streamUrl,
+      track?.stream_url,
+    ];
+
+    for (const value of values) {
+      const normalized = String(value || '').trim();
+      if (!normalized) {
+        continue;
+      }
+      if (!candidateMap.has(normalized)) {
+        candidateMap.set(normalized, true);
+      }
+    }
+    return Array.from(candidateMap.keys());
+  };
+
+  const applyTrackSourceDirectly = async function applyTrackSourceDirectly(track, playback) {
+    const candidates = getTrackSourceCandidates(track);
+    if (!candidates.length) {
+      return false;
+    }
+
+    const media = await app.waitFor(() => document.querySelector('audio, video'), 8000, 80);
+    if (!media) {
+      return false;
+    }
+
+    const positionSec = Number(playback?.positionSec);
+    for (const candidate of candidates) {
+      let sourceUrl = candidate;
+      try {
+        sourceUrl = new URL(candidate, window.location.href).toString();
+      } catch (_error) {
+        sourceUrl = candidate;
+      }
+      if (!isLikelyPlayableTrackUrl(sourceUrl)) {
+        continue;
+      }
+
+      try {
+        media.pause();
+        media.removeAttribute('src');
+        media.src = sourceUrl;
+        media.load();
+        if (Number.isFinite(positionSec) && positionSec >= 0) {
+          try {
+            media.currentTime = Math.max(0, positionSec);
+          } catch (_error) {
+            // ignore
+          }
+        }
+        if (playback?.isPlaying !== false) {
+          media.play().catch(() => {});
+        }
+        return true;
+      } catch (_error) {
+        // continue with next candidate
+      }
+    }
+
+    return false;
+  };
+
   app.handleIncomingTrack = async function handleIncomingTrack(track, playback) {
+    if (!track || typeof track !== 'object') {
+      return;
+    }
+
+    const directApplied = await applyTrackSourceDirectly(track, playback);
+    if (directApplied) {
+      app.applyRemoteState(playback || {});
+      return;
+    }
+
     const title = String(track?.title || '').trim();
     const artists = Array.isArray(track?.artists) ? track.artists : [];
     const artistsPart = artists.map((a) => String(a || '').trim()).filter(Boolean).join(' ');
@@ -1805,6 +2076,26 @@
     if (!playback || typeof playback !== 'object') {
       return;
     }
+
+    const incomingTrackCandidate = {
+      trackId: String(playback.trackId || '').trim(),
+      trackUrl: String(playback.trackUrl || '').trim(),
+      mediaSrc: String(playback.mediaSrc || '').trim(),
+    };
+    const hasTrackSource = Boolean(
+      incomingTrackCandidate.mediaSrc && isLikelyPlayableTrackUrl(incomingTrackCandidate.mediaSrc)
+      || incomingTrackCandidate.trackUrl && isLikelyPlayableTrackUrl(incomingTrackCandidate.trackUrl)
+    );
+
+    if (hasTrackSource && typeof app.handleIncomingTrack === 'function') {
+      app.handleIncomingTrack({
+        trackId: incomingTrackCandidate.trackId,
+        trackUrl: incomingTrackCandidate.trackUrl,
+        mediaSrc: incomingTrackCandidate.mediaSrc,
+      }, playback).catch(() => {});
+      return;
+    }
+
     app.applyRemoteState(playback);
   };
 
@@ -2186,27 +2477,9 @@
     return `${CHANNEL_PREFIX}${roomId}`;
   };
 
-  const getCurrentTrackIdFromLocation = function getCurrentTrackIdFromLocation() {
-    const path = window.location.pathname || '';
-    const query = window.location.search || '';
-    const pathMatch = path.match(/track\/(\d+)/i);
-    if (pathMatch && pathMatch[1]) {
-      return pathMatch[1];
-    }
-
-    const queryMatch = query.match(/(?:\?|&)track(?:Id)?=(\d+)/i);
-    if (queryMatch && queryMatch[1]) {
-      return queryMatch[1];
-    }
-
-    const meta = document.querySelector('meta[name="music:track_id"], meta[property="music:track_id"]');
-    const content = meta && meta.getAttribute('content');
-    if (content) {
-      return String(content).trim();
-    }
-
-    return '';
-  };
+  function getCurrentTrackIdFromLocation() {
+    return getTrackIdFromLocationFallback();
+  }
 
   const extractTrackId = function extractTrackId(value) {
     if (!value || typeof value !== 'object') {
