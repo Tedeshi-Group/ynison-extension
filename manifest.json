@@ -19,7 +19,7 @@
         "content/bootstrap.js"
       ],
       "css": ["styles.css"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "host_permissions": [
@@ -27,6 +27,12 @@
     "https://music.yandex.com/*",
     "https://ynison.tedeshi.ru/*",
     "https://192.168.31.205:10001/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/player-native-bridge.js"],
+      "matches": ["https://music.yandex.ru/*", "https://music.yandex.com/*"]
+    }
   ],
   "background": {
     "service_worker": "background.js"

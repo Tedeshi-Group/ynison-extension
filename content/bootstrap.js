@@ -14,6 +14,9 @@
     return;
   }
   app.STATE.__bootstrapped = true;
+  const NATIVE_PLAYER_CAPTURE_POLL_MS = 250;
+  const NATIVE_PLAYER_CAPTURE_TIMEOUT_MS = 300000;
+  const NATIVE_PLAYER_READY_EVENT = 'ym-sync-native-player-ready';
 
   app.start = async function start() {
     app.STATE.profile = app.buildProfileFromPage();
@@ -29,6 +32,7 @@
     app.installPlayerBarCopyButton();
     app.installNavigationWatcher();
     app.render();
+    app.installNativePlayerBridge();
 
     if (invitedRoomId || app.shouldOpenTogetherPage()) {
       await app.openSyncPage({
@@ -243,6 +247,138 @@
     app.UI.toast.__timer = window.setTimeout(() => {
       app.UI.toast.textContent = '';
     }, 2500);
+  };
+
+  app.installNativePlayerBridge = function installNativePlayerBridge() {
+    if (app.STATE.__nativePlayerBridgeInstalled) {
+      return;
+    }
+    app.STATE.__nativePlayerBridgeInstalled = true;
+
+    const state = {
+      player: null,
+      source: '',
+      capturedAt: 0,
+      timer: null,
+      waiters: [],
+      bridgeInjected: false,
+    };
+    app.STATE.nativePlayer = state;
+
+    app.waitForNativePlayer = function waitForNativePlayer() {
+      if (state.player) {
+        return Promise.resolve(state.player);
+      }
+      return new Promise((resolve) => {
+        state.waiters.push(resolve);
+      });
+    };
+
+    app.getNativePlayer = function getNativePlayer() {
+      return state.player || null;
+    };
+
+    const emitNativePlayer = function emitNativePlayer(player, source) {
+      if (state.player) {
+        return;
+      }
+      state.player = player;
+      state.source = source || 'unknown';
+      state.capturedAt = Date.now();
+
+      state.waiters.forEach((resolve) => {
+        resolve(player);
+      });
+      state.waiters.length = 0;
+
+      if (state.timer) {
+        window.clearInterval(state.timer);
+        state.timer = null;
+      }
+    };
+
+    const handleBridgeReady = function handleBridgeReady(data) {
+      if (!data || data.__ymSyncNativePlayerReady !== true) {
+        return;
+      }
+      const player = window.__ymSyncNativePlayer || { __pageHosted: true };
+      emitNativePlayer(player, data.__ymSyncNativePlayerSource || 'unknown');
+    };
+
+    const handleBridgeMessage = function handleBridgeMessage(event) {
+      if (!event || !event.data || event.data.__ymSyncNativePlayerReady !== true) {
+        return;
+      }
+      handleBridgeReady(event.data);
+    };
+
+    const handleBridgeReadyEvent = function handleBridgeReadyEvent(event) {
+      if (!event || !event.detail) {
+        return;
+      }
+      handleBridgeReady(event.detail);
+    };
+
+    const detectNativeMediaFallback = function detectNativeMediaFallback() {
+      const media = document.querySelector('audio,video');
+      if (media) {
+        emitNativePlayer(media, 'fallback.mediaElement');
+      }
+    };
+
+    const detectNativePlayerProperty = function detectNativePlayerProperty() {
+      const player = window.__ymSyncNativePlayer;
+      if (player) {
+        emitNativePlayer(player, 'poll.windowProperty');
+      }
+    };
+
+    const checkNativePlayer = function checkNativePlayer() {
+      if (state.player) {
+        return;
+      }
+      detectNativePlayerProperty();
+      if (state.player) {
+        return;
+      }
+      detectNativeMediaFallback();
+    };
+
+    const injectPageBridge = function injectPageBridge() {
+      if (state.bridgeInjected) {
+        return;
+      }
+      const bridge = document.createElement('script');
+      bridge.id = 'ym-sync-native-player-bridge';
+      bridge.src = chrome.runtime.getURL('content/player-native-bridge.js');
+      bridge.async = true;
+      bridge.setAttribute('data-ym-sync-native-player-bridge', '1');
+      bridge.onload = () => {
+        state.bridgeInjected = true;
+      };
+
+      const mount = document.documentElement || document.head || document.body;
+      if (mount) {
+        mount.appendChild(bridge);
+      }
+    };
+
+    window.addEventListener('message', handleBridgeMessage);
+    window.addEventListener(NATIVE_PLAYER_READY_EVENT, handleBridgeReadyEvent);
+    injectPageBridge();
+    let elapsed = 0;
+    state.timer = window.setInterval(() => {
+      elapsed += NATIVE_PLAYER_CAPTURE_POLL_MS;
+      checkNativePlayer();
+      if (state.player) {
+        return;
+      }
+      if (elapsed >= NATIVE_PLAYER_CAPTURE_TIMEOUT_MS) {
+        window.clearInterval(state.timer);
+        state.timer = null;
+      }
+    }, NATIVE_PLAYER_CAPTURE_POLL_MS);
+    checkNativePlayer();
   };
 
   void app.start();
