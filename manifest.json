@@ -17,6 +17,7 @@
         "content/roomUi.js",
         "content/clientApi.js",
         "content/playerSyncBroadcastBridge.js",
+        "content/playerSyncHostUi.js",
         "content/bootstrap.js"
       ],
       "css": ["styles.css"],

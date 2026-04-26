@@ -72,6 +72,54 @@
     return parsed < 0 ? 0 : parsed;
   };
 
+  const normalizePlaybackIsPaused = function normalizePlaybackIsPaused(state) {
+    const raw = state && typeof state === 'object' ? state : {};
+    if (typeof raw.is_paused === 'boolean') {
+      return raw.is_paused;
+    }
+    if (typeof raw.isPaused === 'boolean') {
+      return raw.isPaused;
+    }
+    if (typeof raw.paused === 'boolean') {
+      return raw.paused;
+    }
+    if (typeof raw.isPlaying === 'boolean') {
+      return !raw.isPlaying;
+    }
+    return undefined;
+  };
+
+  const normalizePlaybackPayloadState = function normalizePlaybackPayloadState(state = {}) {
+    const rawState = state && typeof state === 'object' ? state : {};
+    const isPaused = normalizePlaybackIsPaused(rawState);
+    const isPlaying = typeof rawState.isPlaying === 'boolean'
+      ? rawState.isPlaying
+      : (typeof isPaused === 'boolean' ? !isPaused : false);
+    const durationRaw = Number.isFinite(Number(rawState.durationSec))
+      ? rawState.durationSec
+      : rawState.duration;
+    return {
+      isPlaying,
+      is_paused: typeof isPaused === 'boolean' ? isPaused : !isPlaying,
+      paused: typeof isPaused === 'boolean' ? isPaused : !isPlaying,
+      positionSec: normalizeNonNegativeNumber(rawState.positionSec),
+      durationSec: normalizeNonNegativeNumber(durationRaw),
+      positionAtServerMs: Number(rawState.positionAtServerMs || Date.now()),
+    };
+  };
+
+  const normalizeIncomingPlaybackState = function normalizeIncomingPlaybackState(playback = {}) {
+    const raw = playback && typeof playback === 'object' ? playback : {};
+    const isPaused = normalizePlaybackIsPaused(raw);
+    if (typeof raw.isPlaying === 'boolean' || typeof isPaused !== 'boolean') {
+      return raw;
+    }
+    return {
+      ...raw,
+      isPlaying: !isPaused,
+    };
+  };
+
   app.sendApiMessage = function sendApiMessage(type, payload = {}) {
     if (!app.STATE.ws || app.STATE.ws.readyState !== WebSocket.OPEN) {
       return false;
@@ -377,7 +425,7 @@
     }
 
     const track = payload.track || payload.currentTrack || null;
-    const playback = payload.state || payload.playback || null;
+    const playback = normalizeIncomingPlaybackState(payload.state || payload.playback || null);
     const trackFingerprint = app.buildTrackFingerprint(track || {});
 
     if (!app.STATE.roomState) {
@@ -410,7 +458,7 @@
       app.STATE.lastStateVersion = version;
     }
 
-    const playback = payload.state || payload || null;
+    const playback = normalizeIncomingPlaybackState(payload.state || payload || null);
     if (!app.STATE.roomState) {
       app.STATE.roomState = {
         id: app.STATE.roomId,
@@ -467,18 +515,24 @@
       Number.isFinite(Number(normalizedState.durationSec)) ? normalizedState.durationSec : trackDurationSec
     );
     const nextStateVersion = ++app.STATE.lastStateVersion;
+    const playback = normalizePlaybackPayloadState({
+      ...normalizedState,
+      durationSec: stateDurationSec,
+    });
+    const currentTrack = {
+      title: normalizedTrack.title || '',
+      artists: Array.isArray(normalizedTrack.artists) ? normalizedTrack.artists : [],
+      durationSec: trackDurationSec,
+      ...(trackId ? { trackId } : {}),
+      ...(trackUrl ? { trackUrl } : {}),
+      ...(mediaSrc ? { mediaSrc } : {}),
+    };
 
     const payload = {
-      track: {
-        title: normalizedTrack.title || '',
-        artists: Array.isArray(normalizedTrack.artists) ? normalizedTrack.artists : [],
-        durationSec: trackDurationSec,
-        ...(trackId ? { trackId } : {}),
-        ...(trackUrl ? { trackUrl } : {}),
-        ...(mediaSrc ? { mediaSrc } : {}),
-      },
+      track: currentTrack,
+      currentTrack,
       state: {
-        isPlaying: Boolean(normalizedState.isPlaying),
+        ...playback,
         positionSec: normalizeNonNegativeNumber(normalizedState.positionSec),
         durationSec: stateDurationSec,
         positionAtServerMs: Number(normalizedState.positionAtServerMs || Date.now()),
@@ -493,6 +547,7 @@
 
   app.broadcastPlayback = function broadcastPlayback(state = {}) {
     const normalizedState = state && typeof state === 'object' ? state : {};
+    const playback = normalizePlaybackPayloadState(normalizedState);
     const playbackTrackId = String(
       normalizedState.trackId || normalizedState.id || normalizedState.playableId || ''
     ).trim();
@@ -503,10 +558,16 @@
       normalizedState.mediaSrc || normalizedState.src || ''
     ).trim();
     const nextStateVersion = ++app.STATE.lastStateVersion;
+    const currentTrack = {
+      ...(playbackTrackId ? { trackId: playbackTrackId } : {}),
+      ...(playbackTrackUrl ? { trackUrl: playbackTrackUrl } : {}),
+      ...(playbackMediaSrc ? { mediaSrc: playbackMediaSrc } : {}),
+    };
     const payload = {
       stateVersion: nextStateVersion,
+      ...(Object.keys(currentTrack).length > 0 ? { currentTrack } : {}),
       state: {
-        isPlaying: Boolean(state.isPlaying),
+        ...playback,
         positionSec: normalizeNonNegativeNumber(state.positionSec),
         durationSec: normalizeNonNegativeNumber(state.durationSec),
         positionAtServerMs: Number(state.positionAtServerMs || Date.now()),

@@ -21,6 +21,7 @@
   const SEEK_APPLY_MIN_DRIFT_MS = 3000;
   const HOST_ACTION_SYNC_DEBOUNCE_MS = 120;
   const HOST_MEDIA_SYNC_EVENTS = ['play', 'pause', 'seeked', 'ended', 'loadedmetadata', 'loadeddata'];
+  const NATIVE_HOST_MEDIA_SYNC_EVENTS = ['play', 'pause', 'seeked', 'ended', 'stateChange', 'timeupdate', 'currentTime', 'position'];
   const remoteActionCooldown = {};
 
   const hostState = {
@@ -39,6 +40,8 @@
     listenerSearchNavCompleted: false,
     hostSyncDebounceTimer: null,
     hostMediaElement: null,
+    nativeMediaUnbind: [],
+    nativeMediaPlayer: null,
   };
 
   const LISTENER_SEARCH_UI_SELECTORS = {
@@ -1072,11 +1075,182 @@
     app.sendHostTrackUpdate(payload, state);
   };
 
+  const buildTransportPlaybackPayload = function buildTransportPlaybackPayload(state) {
+    const playback = state && typeof state === 'object' ? state : {};
+    const isPlaying = playback.isPlaying;
+    const isPausedCandidate = typeof playback.is_paused === 'boolean'
+      ? playback.is_paused
+      : (typeof playback.paused === 'boolean' ? playback.paused : undefined);
+    const paused = typeof isPausedCandidate === 'boolean'
+      ? isPausedCandidate
+      : (typeof isPlaying === 'boolean' ? !isPlaying : undefined);
+
+    return {
+      eventType: 'playback',
+      playback: {
+        trackId: String(
+          playback.trackId
+          || playback.id
+          || playback.playableId
+          || ''
+        ).trim(),
+        trackUrl: String(
+          playback.trackUrl
+          || playback.mediaSrc
+          || playback.url
+          || ''
+        ).trim(),
+        position: Number(playback.positionSec),
+        duration: Number(playback.durationSec),
+        ...(typeof paused === 'boolean' ? { paused } : {}),
+      },
+    };
+  };
+
   app.broadcastHostPlaybackState = function broadcastHostPlaybackState(state) {
-    if (!app.canControl() || !app.STATE.isConnectedToBackend) {
+    if (!app.canControl()) {
+      return;
+    }
+    if (typeof app.emitTransportMessage === 'function') {
+      app.emitTransportMessage(buildTransportPlaybackPayload(state || {}));
+    }
+    if (!app.STATE.isConnectedToBackend) {
       return;
     }
     app.sendHostPlaybackUpdate(state);
+  };
+
+  const dispatchHostSyncEvent = function dispatchHostSyncEvent(name, detail = {}) {
+    const snapshot = app.readCurrentHostTrackState();
+    try {
+      window.dispatchEvent(new CustomEvent('ym-sync-host-media', {
+        detail: {
+          event: name,
+          roomId: app.STATE.roomId,
+          trackId: snapshot ? snapshot.trackId : '',
+          trackUrl: snapshot ? snapshot.trackUrl : '',
+          isPlaying: snapshot ? snapshot.isPlaying : undefined,
+          positionSec: snapshot ? snapshot.positionSec : undefined,
+          ...detail,
+        },
+      }));
+    } catch (_error) {
+      // no-op
+    }
+  };
+
+  const triggerImmediateHostSync = function triggerImmediateHostSync(source = 'unknown') {
+    if (hostState.hostSyncDebounceTimer) {
+      window.clearTimeout(hostState.hostSyncDebounceTimer);
+      hostState.hostSyncDebounceTimer = null;
+    }
+    dispatchHostSyncEvent('sync-trigger', { source });
+    app.syncHostPlayback({ force: true });
+  };
+
+  const patchNativePlayerMethod = function patchNativePlayerMethod(player, method, source) {
+    if (!player || typeof player !== 'object' || typeof player[method] !== 'function') {
+      return null;
+    }
+    if (player[method].__ymSyncHostPatched) {
+      return null;
+    }
+
+    const original = player[method];
+    const patched = function patchedNativeMethod(...args) {
+      const result = original.apply(this, args);
+      dispatchHostSyncEvent('method-call', {
+        method,
+        source,
+        args: args.length > 0 ? args : undefined,
+      });
+      triggerImmediateHostSync(`${source}.${method}`);
+      return result;
+    };
+    patched.__ymSyncHostPatched = true;
+    patched.__ymSyncHostOriginal = original;
+    player[method] = patched;
+    return () => {
+      if (player[method] === patched) {
+        player[method] = original;
+      }
+    };
+  };
+
+  const unbindHostNativeMediaSync = function unbindHostNativeMediaSync() {
+    hostState.nativeMediaUnbind.forEach((cleanup) => {
+      try {
+        cleanup();
+      } catch (_error) {
+        // no-op
+      }
+    });
+    hostState.nativeMediaUnbind = [];
+    hostState.nativeMediaPlayer = null;
+  };
+
+  const bindHostNativeMediaSync = function bindHostNativeMediaSync() {
+    if (!app.isHost()) {
+      unbindHostNativeMediaSync();
+      return;
+    }
+    if (!app.STATE.roomId) {
+      return;
+    }
+
+    const player = resolveNativePlayer();
+    if (!player || typeof player !== 'object') {
+      return;
+    }
+    if (hostState.nativeMediaPlayer === player && hostState.nativeMediaUnbind.length > 0) {
+      return;
+    }
+
+    unbindHostNativeMediaSync();
+    hostState.nativeMediaPlayer = player;
+
+    const methods = ['play', 'playAsync', 'pause', 'stop', 'seek', 'seekTo', 'setCurrentTime', 'setCurrentPosition', 'setCurrentPlaybackTime', 'setPosition'];
+    const wrapMethod = function wrapMethod(method, source) {
+      const restore = patchNativePlayerMethod(player, method, source);
+      if (restore) {
+        hostState.nativeMediaUnbind.push(restore);
+      }
+    };
+    methods.forEach((method) => {
+      wrapMethod(method, 'native');
+    });
+
+    const subscribeEvent = function subscribeEvent(eventName) {
+      const handler = function onNativePlayerEvent() {
+        dispatchHostSyncEvent('player-event', {
+          eventName,
+        });
+        triggerImmediateHostSync(`native.${eventName}`);
+      };
+      if (typeof player.addEventListener === 'function') {
+        player.addEventListener(eventName, handler);
+        hostState.nativeMediaUnbind.push(() => {
+          player.removeEventListener(eventName, handler);
+        });
+        return;
+      }
+      if (typeof player.on === 'function') {
+        player.on(eventName, handler);
+        hostState.nativeMediaUnbind.push(() => {
+          if (typeof player.off === 'function') {
+            player.off(eventName, handler);
+            return;
+          }
+          if (typeof player.removeListener === 'function') {
+            player.removeListener(eventName, handler);
+          }
+        });
+      }
+    };
+
+    NATIVE_HOST_MEDIA_SYNC_EVENTS.forEach((eventName) => {
+      subscribeEvent(eventName);
+    });
   };
 
   const scheduleHostSync = function scheduleHostSync(delayMs = HOST_ACTION_SYNC_DEBOUNCE_MS) {
@@ -1095,8 +1269,12 @@
     }, delayMs);
   };
 
-  const onHostMediaPlaybackEvent = function onHostMediaPlaybackEvent() {
-    scheduleHostSync();
+  const onHostMediaPlaybackEvent = function onHostMediaPlaybackEvent(event) {
+    dispatchHostSyncEvent('media-element-event', {
+      eventType: event && event.type ? event.type : 'unknown',
+      currentTarget: event && event.currentTarget ? event.currentTarget.tagName : 'unknown',
+    });
+    triggerImmediateHostSync(`media.${event && event.type ? event.type : 'event'}`);
   };
 
   const detachHostMediaSyncListeners = function detachHostMediaSyncListeners(mediaElement) {
@@ -1114,6 +1292,7 @@
         detachHostMediaSyncListeners(hostState.hostMediaElement);
         hostState.hostMediaElement = null;
       }
+      unbindHostNativeMediaSync();
       return;
     }
 
@@ -1122,6 +1301,7 @@
       return;
     }
     if (hostState.hostMediaElement === mediaElement) {
+      bindHostNativeMediaSync();
       return;
     }
     if (hostState.hostMediaElement) {
@@ -1131,6 +1311,7 @@
       mediaElement.addEventListener(eventName, onHostMediaPlaybackEvent, true);
     }
     hostState.hostMediaElement = mediaElement;
+    bindHostNativeMediaSync();
   };
 
   app.syncHostPlayback = function syncHostPlayback(options = {}) {
@@ -1142,7 +1323,17 @@
     hostState.lastPlaybackReadAt = now;
 
     const currentState = app.readCurrentHostTrackState();
-    if (!currentState.title && !currentState.artists.length) {
+    const mediaTrackId = String(currentState.trackId || resolveNativePlayerTrackId() || '').trim();
+    if (!currentState.title && !currentState.artists.length && !mediaTrackId && !currentState.trackUrl && !currentState.mediaSrc) {
+      if (app.debug) {
+        app.debug('[ym-sync] syncHostPlayback skip: no track identity', {
+          title: currentState.title,
+          artists: currentState.artists,
+          trackId: mediaTrackId,
+          trackUrl: currentState.trackUrl,
+          mediaSrc: currentState.mediaSrc,
+        });
+      }
       return;
     }
 
@@ -1150,7 +1341,6 @@
     const trackChanged = fingerprint !== hostState.lastTrackFingerprint;
     const positionChanged = Math.abs(currentState.positionSec - (app.__lastSentPositionSec || 0)) >= 1;
     const stateNow = currentState.isPlaying;
-    const mediaTrackId = String(currentState.trackId || resolveNativePlayerTrackId() || '');
     const playbackTrackUrl = String(currentState.mediaSrc || currentState.trackUrl || resolveNativePlayerSource() || window.location.href || '');
     const playbackMediaSrc = String(currentState.mediaSrc || '');
 
@@ -1224,6 +1414,7 @@
       detachHostMediaSyncListeners(hostState.hostMediaElement);
       hostState.hostMediaElement = null;
     }
+    unbindHostNativeMediaSync();
     if (hostState.hostSyncDebounceTimer) {
       window.clearTimeout(hostState.hostSyncDebounceTimer);
       hostState.hostSyncDebounceTimer = null;
@@ -1624,7 +1815,8 @@
     return document.querySelector('[class*="SearchPage"]')
       || document.querySelector('[role="search"]')
       || document.querySelector('main')
-      || document.body;
+      || document.body
+      || document.documentElement;
   };
 
   const getFirstCandidatePlayButton = function getFirstCandidatePlayButton(buttons) {
@@ -1637,6 +1829,9 @@
 
   const findPlayButtonInSearchResults = function findPlayButtonInSearchResults() {
     const scope = getSearchResultsContainer();
+    if (!scope || typeof scope.querySelectorAll !== 'function') {
+      return null;
+    }
     const selectors = [
       'button[class*="PlayButtonWithCover_"]',
       '[aria-label*="play" i][class*="playButton"]',
@@ -2004,6 +2199,25 @@
     }
   };
 
+  const normalizePlaybackIsPaused = function normalizePlaybackIsPaused(raw) {
+    if (!raw || typeof raw !== 'object') {
+      return undefined;
+    }
+    if (typeof raw.is_paused === 'boolean') {
+      return raw.is_paused;
+    }
+    if (typeof raw.isPaused === 'boolean') {
+      return raw.isPaused;
+    }
+    if (typeof raw.paused === 'boolean') {
+      return raw.paused;
+    }
+    if (typeof raw.isPlaying === 'boolean') {
+      return !raw.isPlaying;
+    }
+    return undefined;
+  };
+
   const normalizeListenerPlayback = function normalizeListenerPlayback(raw) {
     if (!raw || typeof raw !== 'object') {
       return {
@@ -2013,10 +2227,13 @@
         positionAtServerMs: NaN,
       };
     }
+    const isPaused = normalizePlaybackIsPaused(raw);
     return {
       positionSec: Number(raw.positionSec),
       durationSec: Number(raw.durationSec),
-      isPlaying: raw.isPlaying,
+      isPlaying: typeof raw.isPlaying === 'boolean'
+        ? raw.isPlaying
+        : (typeof isPaused === 'boolean' ? !isPaused : undefined),
       positionAtServerMs: Number(raw.positionAtServerMs),
     };
   };
@@ -2580,6 +2797,9 @@
   };
 
   app.startupPlayerSync = function startupPlayerSync() {
+    if (typeof app.installPlayerSync === 'function') {
+      app.installPlayerSync();
+    }
     app.startHostSyncLoop();
     bindHostControlSyncInterceptors();
     app.handleIncomingRoomSnapshot(app.STATE.roomState || {});
