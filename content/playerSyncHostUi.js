@@ -1139,13 +1139,20 @@
     }
   };
 
-  const triggerImmediateHostSync = function triggerImmediateHostSync(source = 'unknown') {
+  const triggerImmediateHostSync = function triggerImmediateHostSync(source = 'unknown', stateOverride = {}) {
     if (hostState.hostSyncDebounceTimer) {
       window.clearTimeout(hostState.hostSyncDebounceTimer);
       hostState.hostSyncDebounceTimer = null;
     }
     dispatchHostSyncEvent('sync-trigger', { source });
-    app.syncHostPlayback({ force: true });
+    hostState.hostSyncDebounceTimer = window.setTimeout(() => {
+      hostState.hostSyncDebounceTimer = null;
+      const stateOverrideIsPlaying = resolveStateOverrideValue(stateOverride.isPlaying);
+      app.syncHostPlayback({
+        force: true,
+        ...(typeof stateOverrideIsPlaying === 'boolean' ? { isPlaying: stateOverrideIsPlaying } : {}),
+      });
+    }, 0);
   };
 
   const patchNativePlayerMethod = function patchNativePlayerMethod(player, method, source) {
@@ -1164,7 +1171,15 @@
         source,
         args: args.length > 0 ? args : undefined,
       });
-      triggerImmediateHostSync(`${source}.${method}`);
+      const methodState = {
+        play: true,
+        playAsync: true,
+        pause: false,
+        stop: false,
+      }[method];
+      triggerImmediateHostSync(`${source}.${method}`, {
+        isPlaying: typeof methodState === 'boolean' ? methodState : undefined,
+      });
       return result;
     };
     patched.__ymSyncHostPatched = true;
@@ -1221,11 +1236,18 @@
     });
 
     const subscribeEvent = function subscribeEvent(eventName) {
-      const handler = function onNativePlayerEvent() {
+      const handler = function onNativePlayerEvent(event) {
+        const inferredState = inferIsPlayingFromEvent({
+          type: eventName,
+          detail: event && event.detail ? event.detail : event,
+        });
         dispatchHostSyncEvent('player-event', {
           eventName,
+          inferredState,
         });
-        triggerImmediateHostSync(`native.${eventName}`);
+        triggerImmediateHostSync(`native.${eventName}`, {
+          isPlaying: inferredState,
+        });
       };
       if (typeof player.addEventListener === 'function') {
         player.addEventListener(eventName, handler);
@@ -1253,7 +1275,76 @@
     });
   };
 
-  const scheduleHostSync = function scheduleHostSync(delayMs = HOST_ACTION_SYNC_DEBOUNCE_MS) {
+  const inferIsPlayingFromEvent = function inferIsPlayingFromEvent(eventData = {}) {
+    const data = eventData && typeof eventData === 'object' ? eventData : {};
+    const eventType = String(data.type || '').toLowerCase();
+    if (eventType === 'play' || eventType === 'playing') {
+      return true;
+    }
+    if (eventType === 'pause' || eventType === 'ended') {
+      return false;
+    }
+
+    const detail = data.detail || {};
+    if (typeof detail.isPlaying === 'boolean') {
+      return detail.isPlaying;
+    }
+    if (typeof detail.is_paused === 'boolean') {
+      return !detail.is_paused;
+    }
+    if (typeof detail.paused === 'boolean') {
+      return !detail.paused;
+    }
+
+    const statusCandidates = [
+      detail.state,
+      detail.status,
+      detail.playbackState,
+      detail.currentState,
+    ];
+    for (const candidate of statusCandidates) {
+      if (typeof candidate !== 'string') {
+        continue;
+      }
+      const lower = candidate.toLowerCase();
+      if (lower.includes('play')) {
+        return true;
+      }
+      if (lower.includes('pause') || lower.includes('stop')) {
+        return false;
+      }
+    }
+    const target = data.target || data.currentTarget;
+    if (target && typeof target.paused === 'boolean') {
+      return !target.paused;
+    }
+    return undefined;
+  };
+
+  const readNativeBridgeIsPlaying = function readNativeBridgeIsPlaying() {
+    const nativeState = readNativePlaybackState(resolveNativePlayer());
+    if (typeof nativeState.isPlaying === 'boolean') {
+      return nativeState.isPlaying;
+    }
+    const mediaElement = document.querySelector('audio, video');
+    if (mediaElement && typeof mediaElement.paused === 'boolean') {
+      return !mediaElement.paused;
+    }
+    return undefined;
+  };
+
+  const resolveStateOverrideValue = function resolveStateOverrideValue(stateOverride) {
+    if (typeof stateOverride === 'function') {
+      try {
+        return stateOverride();
+      } catch (_error) {
+        return undefined;
+      }
+    }
+    return stateOverride;
+  };
+
+  const scheduleHostSync = function scheduleHostSync(delayMs = HOST_ACTION_SYNC_DEBOUNCE_MS, stateOverride = {}) {
     if (!app.isHost()) {
       return;
     }
@@ -1265,16 +1356,29 @@
 
     hostState.hostSyncDebounceTimer = window.setTimeout(() => {
       hostState.hostSyncDebounceTimer = null;
-      app.syncHostPlayback({ force: true });
+      const stateOverrideIsPlaying = resolveStateOverrideValue(stateOverride.isPlaying);
+      app.syncHostPlayback({
+        force: true,
+        ...(typeof stateOverrideIsPlaying === 'boolean' ? { isPlaying: stateOverrideIsPlaying } : {}),
+      });
     }, delayMs);
   };
 
   const onHostMediaPlaybackEvent = function onHostMediaPlaybackEvent(event) {
+    const eventType = event && event.type ? event.type : 'unknown';
+    const inferredState = inferIsPlayingFromEvent({
+      type: eventType,
+      target: event ? event.target : null,
+      currentTarget: event ? event.currentTarget : null,
+      detail: event ? event.detail : null,
+    });
     dispatchHostSyncEvent('media-element-event', {
-      eventType: event && event.type ? event.type : 'unknown',
+      eventType,
       currentTarget: event && event.currentTarget ? event.currentTarget.tagName : 'unknown',
     });
-    triggerImmediateHostSync(`media.${event && event.type ? event.type : 'event'}`);
+    triggerImmediateHostSync(`media.${eventType}`, {
+      isPlaying: inferredState,
+    });
   };
 
   const detachHostMediaSyncListeners = function detachHostMediaSyncListeners(mediaElement) {
@@ -1316,6 +1420,7 @@
 
   app.syncHostPlayback = function syncHostPlayback(options = {}) {
     const force = Boolean(options.force);
+    const stateOverride = options;
     const now = Date.now();
     if (!force && now - hostState.lastPlaybackReadAt < 250) {
       return;
@@ -1340,7 +1445,9 @@
     const fingerprint = app.buildTrackFingerprint(currentState);
     const trackChanged = fingerprint !== hostState.lastTrackFingerprint;
     const positionChanged = Math.abs(currentState.positionSec - (app.__lastSentPositionSec || 0)) >= 1;
-    const stateNow = currentState.isPlaying;
+    const stateNow = typeof stateOverride.isPlaying === 'boolean'
+      ? stateOverride.isPlaying
+      : currentState.isPlaying;
     const playbackTrackUrl = String(currentState.mediaSrc || currentState.trackUrl || resolveNativePlayerSource() || window.location.href || '');
     const playbackMediaSrc = String(currentState.mediaSrc || '');
 
@@ -2489,7 +2596,10 @@
     if (label.includes('pause') || label.includes('пауза')) {
       return 'pause';
     }
-    if (label.includes('play') || label.includes('воспроизвести') || label.includes('старт')) {
+    if (
+      label.includes('play') || label.includes('воспроизвести') || label.includes('старт')
+      || label.includes('continue') || label.includes('resume') || label.includes('начать') || label.includes('включить')
+    ) {
       return 'play';
     }
     if (label.includes('next') || label.includes('следующий')) {
@@ -2550,6 +2660,11 @@
     if (event && event.isTrusted === false) {
       return;
     }
+    const action = app.parseActionFromNode(event.target);
+    if (!action) {
+      return;
+    }
+
     if (!app.canControl()) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -2560,11 +2675,6 @@
           app.toast('Вы не в режиме ведущего: управление отключено');
         }
       }
-      return;
-    }
-
-    const action = app.parseActionFromNode(event.target);
-    if (!action) {
       return;
     }
 
@@ -2640,16 +2750,30 @@
 
     const isSeekInteraction = (event.type === 'input' || event.type === 'change') && app.isSeekInput(target);
     if (event.type === 'click' || isSeekInteraction) {
-      hostState.hostSyncDebounceTimer = window.setTimeout(() => {
-        hostState.hostSyncDebounceTimer = null;
-        app.syncHostPlayback({ force: true });
-      }, 0);
-    }
+      if (action === 'play') {
+        triggerImmediateHostSync(`control.${action}`, {
+          isPlaying: () => {
+            const nativeState = readNativeBridgeIsPlaying();
+            return typeof nativeState === 'boolean' ? nativeState : true;
+          },
+        });
+        return;
+      }
+      if (action === 'pause') {
+        triggerImmediateHostSync(`control.${action}`, {
+          isPlaying: () => {
+            const nativeState = readNativeBridgeIsPlaying();
+            return typeof nativeState === 'boolean' ? nativeState : false;
+          },
+        });
+        return;
+      }
+      if (action === 'next' || action === 'previous') {
+        scheduleHostSync(350);
+        return;
+      }
 
-    if (action === 'next' || action === 'previous') {
-      window.setTimeout(() => {
-        app.syncHostPlayback({ force: true });
-      }, 350);
+      scheduleHostSync(0);
     }
   };
 
@@ -2768,6 +2892,16 @@
         break;
     }
 
+    if (action === 'play' || action === 'pause') {
+      scheduleHostSync(HOST_ACTION_SYNC_DEBOUNCE_MS, {
+        isPlaying: action === 'play',
+      });
+      return;
+    }
+    if (action === 'seek') {
+      scheduleHostSync(HOST_ACTION_SYNC_DEBOUNCE_MS);
+      return;
+    }
     scheduleHostSync(HOST_ACTION_SYNC_DEBOUNCE_MS);
   };
 
