@@ -42,6 +42,8 @@
     hostMediaElement: null,
     nativeMediaUnbind: [],
     nativeMediaPlayer: null,
+    remoteTrackLoadKey: '',
+    remoteTrackLoadStartedAt: 0,
   };
 
   const LISTENER_SEARCH_UI_SELECTORS = {
@@ -2205,9 +2207,23 @@
   };
 
   app.setProgressInput = function setProgressInput(seconds, options = {}) {
-    const seekPlayer = resolveNativePlayer();
     const seekSec = Number(seconds);
-    if (seekPlayer && Number.isFinite(seekSec) && setNativeCurrentTime(seekPlayer, seekSec)) {
+    if (!Number.isFinite(seekSec)) {
+      return false;
+    }
+    const force = Boolean(options.force);
+    const minDriftSec = (force ? 0 : (Number(app.constants.REMOTE_SEEK_MIN_DRIFT_MS) || SEEK_APPLY_MIN_DRIFT_MS)) / 1000;
+    const mediaNow = document.querySelector('audio, video');
+    const nativeNow = readNativePlaybackState(resolveNativePlayer());
+    const localSec = nativeNow && Number.isFinite(Number(nativeNow.currentTime))
+      ? Number(nativeNow.currentTime)
+      : (mediaNow && Number.isFinite(mediaNow.currentTime) ? mediaNow.currentTime : null);
+    if (localSec !== null && Math.abs(localSec - seekSec) < minDriftSec) {
+      return true;
+    }
+
+    const seekPlayer = resolveNativePlayer();
+    if (seekPlayer && setNativeCurrentTime(seekPlayer, seekSec)) {
       return true;
     }
 
@@ -2215,9 +2231,8 @@
     if (!seekInput || !Number.isFinite(seekSec)) {
       return false;
     }
-    const sec = Math.max(0, Number(seconds));
+    const sec = Math.max(0, seekSec);
     const media = document.querySelector('audio, video');
-    const force = Boolean(options.force);
 
     const durationMs = pickSeekDurationMs(seekInput);
     if (!durationMs || durationMs < 500) {
@@ -2477,6 +2492,40 @@
     return Array.from(candidateMap.keys());
   };
 
+  const playbackSourceKey = function playbackSourceKey(value) {
+    const raw = String(value || '').trim();
+    if (!raw) {
+      return '';
+    }
+    try {
+      const url = new URL(raw, window.location.href);
+      return `${url.origin}${url.pathname}`;
+    } catch (_error) {
+      return raw.split('?')[0].split('#')[0];
+    }
+  };
+
+  const isSameLoadedTrack = function isSameLoadedTrack(candidate) {
+    const incomingId = String(candidate?.trackId || '').trim();
+    const localId = String(resolveNativePlayerTrackId() || '').trim();
+    if (incomingId && localId) {
+      return incomingId === localId;
+    }
+
+    const incomingKeys = [candidate?.mediaSrc, candidate?.trackUrl, candidate?.src, candidate?.yaspSrc]
+      .map(playbackSourceKey)
+      .filter(Boolean);
+    const media = document.querySelector('audio, video');
+    const localKeys = [
+      playbackSourceKey(media && (media.currentSrc || media.src)),
+      playbackSourceKey(resolveNativePlayerSource()),
+    ].filter(Boolean);
+    if (!incomingKeys.length || !localKeys.length) {
+      return false;
+    }
+    return incomingKeys.some((key) => localKeys.includes(key));
+  };
+
   const applyTrackSourceDirectly = async function applyTrackSourceDirectly(track, playback) {
     const candidates = getTrackSourceCandidates(track);
     if (!candidates.length) {
@@ -2489,6 +2538,10 @@
     }
 
     const positionSec = Number(playback?.positionSec);
+    const loadedKeys = [
+      playbackSourceKey(media.currentSrc || media.src),
+      playbackSourceKey(resolveNativePlayerSource()),
+    ].filter(Boolean);
     for (const candidate of candidates) {
       let sourceUrl = candidate;
       try {
@@ -2498,6 +2551,14 @@
       }
       if (!isLikelyPlayableTrackUrl(sourceUrl)) {
         continue;
+      }
+      if (loadedKeys.includes(playbackSourceKey(sourceUrl)) || isSameLoadedTrack(track)) {
+        if (playback?.isPlaying === false) {
+          media.pause();
+        } else if (media.paused) {
+          media.play().catch(() => {});
+        }
+        return true;
       }
 
       try {
@@ -2570,7 +2631,16 @@
       || incomingTrackCandidate.trackUrl && isLikelyPlayableTrackUrl(incomingTrackCandidate.trackUrl)
     );
 
-    if (hasTrackSource && typeof app.handleIncomingTrack === 'function') {
+    if (hasTrackSource && !isSameLoadedTrack(incomingTrackCandidate) && typeof app.handleIncomingTrack === 'function') {
+      const loadKey = incomingTrackCandidate.trackId
+        || playbackSourceKey(incomingTrackCandidate.mediaSrc || incomingTrackCandidate.trackUrl);
+      const now = Date.now();
+      if (loadKey && hostState.remoteTrackLoadKey === loadKey && now - hostState.remoteTrackLoadStartedAt < 8000) {
+        app.applyRemoteState(playback);
+        return;
+      }
+      hostState.remoteTrackLoadKey = loadKey;
+      hostState.remoteTrackLoadStartedAt = now;
       app.handleIncomingTrack({
         trackId: incomingTrackCandidate.trackId,
         trackUrl: incomingTrackCandidate.trackUrl,
