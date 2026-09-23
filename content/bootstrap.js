@@ -20,7 +20,8 @@
 
   app.start = async function start() {
     app.STATE.profile = app.buildProfileFromPage();
-    const invitedRoomId = app.consumeInviteParamFromLocation();
+    const invitedRoomId = app.readTogetherRoomFromUrl(app.getLocationUrl())
+      || app.getPendingInviteRoomId();
     if (invitedRoomId) {
       app.STATE.joinRoleHint = 'listener';
     }
@@ -103,6 +104,7 @@
       const nextState = typeof history.state === 'object' && history.state !== null ? { ...history.state } : {};
       nextState.__ymSyncInternal = true;
       currentUrl.searchParams.delete('together');
+      app.STATE.__suppressNavigation = true;
       history.replaceState(nextState, '', currentUrl.toString());
       return invitedRoomId;
     } catch (_error) {
@@ -111,11 +113,31 @@
   };
 
   app.onNavigationChanged = function onNavigationChanged() {
+    if (app.STATE.__suppressNavigation) {
+      app.STATE.__suppressNavigation = false;
+      return;
+    }
+    const pendingRoomId = app.getPendingInviteRoomId();
+    if (pendingRoomId) {
+      app.STATE.joinInput = pendingRoomId;
+      app.STATE.joinRoleHint = 'listener';
+      const alreadyThere = app.STATE.isPageOpen && app.STATE.roomId === pendingRoomId;
+      if (!alreadyThere) {
+        void app.openSyncPage({
+          updateHistory: false,
+          joinRoleHint: 'listener',
+        });
+      }
+      return;
+    }
+
     const invitedRoomId = app.consumeInviteParamFromLocation();
     const roomIdFromRoute = app.readRoomIdFromLocation();
     const rawRoomId = invitedRoomId || roomIdFromRoute;
     const roomId = rawRoomId ? app.extractRoomId(rawRoomId) : '';
-    app.STATE.joinInput = roomId;
+    if (roomId) {
+      app.STATE.joinInput = roomId;
+    }
 
     if (invitedRoomId || app.isTogetherUrl()) {
       const host = app.ensureMainHost();
@@ -188,6 +210,8 @@
       return;
     }
 
+    app.clearPendingInvite();
+    app.STATE.joinInput = '';
     app.hideSyncPage();
   };
 

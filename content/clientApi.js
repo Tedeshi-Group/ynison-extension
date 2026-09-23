@@ -142,6 +142,111 @@
     }
   };
 
+  app.openSyncSocket = function openSyncSocket(url) {
+    const rawUrl = String(url || '');
+    const extensionApi = globalThis.browser || globalThis.chrome;
+    console.log('[Вместе] страница не может открыть ws сама: сайт это запрещает. Соединение идёт через расширение.', rawUrl);
+
+    if (!extensionApi || !extensionApi.runtime || typeof extensionApi.runtime.connect !== 'function') {
+      console.error('[Вместе] у страницы нет связи с расширением');
+      return new WebSocket('ws://127.0.0.1:9/closed');
+    }
+
+    const bridged = {
+      url: rawUrl,
+      readyState: 0,
+      _listeners: { open: [], message: [], close: [], error: [] },
+      addEventListener(type, handler) {
+        if (this._listeners[type] && typeof handler === 'function') {
+          this._listeners[type].push(handler);
+        }
+      },
+      _emit(type, event) {
+        for (const handler of this._listeners[type] || []) {
+          try {
+            handler(event);
+          } catch (_error) {
+            // Ошибка слушателя не должна рвать канал.
+          }
+        }
+      },
+      send(data) {
+        if (this.readyState !== 1 || !this._port) {
+          return;
+        }
+        this._port.postMessage({ type: 'send', data: String(data) });
+      },
+      close(code, reason) {
+        if (this.readyState === 2 || this.readyState === 3) {
+          return;
+        }
+        this.readyState = 2;
+        try {
+          this._port.postMessage({ type: 'close', code: code || 1000, reason: reason || '' });
+        } catch (_error) {
+          this.readyState = 3;
+          this._emit('close', {});
+        }
+      },
+    };
+
+    const port = extensionApi.runtime.connect({ name: 'ym-sync-ws' });
+    bridged._port = port;
+    const askConnect = () => {
+      try {
+        port.postMessage({ type: 'connect', url: rawUrl });
+      } catch (error) {
+        console.error('[Вместе] не удалось попросить расширение открыть сокет', error);
+      }
+    };
+
+    port.onMessage.addListener((message) => {
+      if (!message || typeof message !== 'object') {
+        return;
+      }
+      if (message.type === 'bg-ready') {
+        console.log('[Вместе] расширение на связи, открываю сокет');
+        askConnect();
+        return;
+      }
+      if (message.type === 'log') {
+        console.log('[Вместе]', message.message || '');
+        return;
+      }
+      if (message.type === 'open') {
+        bridged.readyState = 1;
+        console.log('[Вместе] сокет открыт через расширение');
+        bridged._emit('open', {});
+        return;
+      }
+      if (message.type === 'message') {
+        bridged._emit('message', { data: message.data });
+        return;
+      }
+      if (message.type === 'error') {
+        console.error('[Вместе]', message.message || 'расширение не открыло сокет');
+        bridged._emit('error', {});
+        return;
+      }
+      if (message.type === 'close') {
+        bridged.readyState = 3;
+        console.warn('[Вместе] сокет расширения закрыт');
+        bridged._emit('close', {});
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      const lastError = extensionApi.runtime.lastError;
+      console.error('[Вместе] расширение отключилось', lastError && lastError.message ? lastError.message : '');
+      if (bridged.readyState === 3) {
+        return;
+      }
+      bridged.readyState = 3;
+      bridged._emit('close', {});
+    });
+    askConnect();
+    return bridged;
+  };
+
   app.connectToRoom = async function connectToRoom(rawRoomId, roleHint = 'listener') {
     const roomId = app.extractRoomId(rawRoomId);
     if (!roomId) {
@@ -180,7 +285,7 @@
 
     app.STATE.wsReadyState = WebSocket.CONNECTING;
     app.STATE._backendConnectedAt = 0;
-    const socket = new WebSocket(app.getWsUrl(roomId, normalizedRole));
+    const socket = app.openSyncSocket(app.getWsUrl(roomId, normalizedRole));
     app.STATE.ws = socket;
 
     socket.addEventListener('open', () => {
@@ -223,21 +328,26 @@
       app.STATE.wsReadyState = WebSocket.CLOSED;
     });
 
-    await new Promise((resolve) => {
+    const connected = await new Promise((resolve) => {
       const startAt = Date.now();
       const poll = () => {
-        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
-          resolve();
+        if (app.STATE.ws === socket && app.STATE.isConnectedToBackend) {
+          resolve(true);
           return;
         }
-        if (Date.now() - startAt > 7000) {
-          resolve();
+        if (socket.readyState === WebSocket.CLOSED || Date.now() - startAt > 5000) {
+          resolve(false);
           return;
         }
         window.setTimeout(poll, 100);
       };
       poll();
     });
+
+    if (!connected) {
+      app.setError('Сервер не ответил. В папке server должна быть запущена команда npm start.');
+      return false;
+    }
 
     if (typeof app.resetListenerTrackAutomation === 'function') {
       app.resetListenerTrackAutomation();
@@ -625,15 +735,21 @@
 
     app.setBusy(true);
     app.clearError();
+    if (typeof app.clearPendingInvite === 'function') {
+      app.clearPendingInvite();
+    }
 
     try {
       const createdRoomId = `room-${Date.now().toString(36)}`;
       app.STATE.clientId = app.getSelfClientId();
       app.STATE.roomRole = 'host';
-      await app.connectToRoom(createdRoomId, 'host');
+      const connected = await app.connectToRoom(createdRoomId, 'host');
+      if (!connected) {
+        return false;
+      }
       app.STATE.joinInput = app.STATE.roomId;
       if (!silentToast) {
-        app.toast('Комната создана и подключена к серверу');
+        app.toast('Комната создана, сервер ответил');
       }
       return true;
     } catch (error) {

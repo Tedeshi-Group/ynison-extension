@@ -33,7 +33,8 @@
 }
 
 .ym-sync-content-host.ym-sync-content-host--active > :not(.ym-sync-page) {
-  display: none !important;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .ym-sync-page * {

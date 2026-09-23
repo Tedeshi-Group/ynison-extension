@@ -1,4 +1,38 @@
-﻿(function ymSyncStateModule() {
+﻿(function ymSyncRememberInviteFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const together = String(params.get('together') || '').trim();
+    const roomId = String(params.get('roomId') || '').trim();
+    const token = together && together !== '1' ? together : roomId;
+    if (token) {
+      sessionStorage.setItem('ym-sync-pending-invite', token);
+    }
+  } catch (_error) {
+    // Без sessionStorage приглашение останется только в адресе.
+  }
+})();
+
+(function ymSyncLeaveBrokenTogetherPath() {
+  try {
+    const path = String(window.location.pathname || '').replace(/\/+$/, '') || '/';
+    if (path !== '/together') {
+      return;
+    }
+    const next = new URL(window.location.href);
+    next.pathname = '/';
+    if (!next.searchParams.get('together') && !next.searchParams.get('roomId')) {
+      const storedRoomId = localStorage.getItem('ym-sync-room-id');
+      if (storedRoomId) {
+        next.searchParams.set('roomId', storedRoomId);
+      }
+    }
+    window.location.replace(next.toString());
+  } catch (_error) {
+    // Если адрес поменять нельзя, страница остаётся как есть.
+  }
+})();
+
+(function ymSyncStateModule() {
   const app = (window.__ymSync = window.__ymSync || {});
   if (app.modules && app.modules.state) {
     return;
@@ -12,7 +46,7 @@
     STORAGE_ROOM_KEY: 'ym-sync-room-id',
     STORAGE_CLIENT_KEY: 'ym-sync-client-id',
     STORAGE_BACKEND_MODE_KEY: 'ym-sync-backend-mode',
-    BACKEND_MODE_DEFAULT: 'production',
+    BACKEND_MODE_DEFAULT: 'lan',
     BACKEND_MODES: {
       production: {
         API_ORIGIN: 'https://ynison.tedeshi.ru',
@@ -20,9 +54,9 @@
         API_WS_URL: 'wss://ynison.tedeshi.ru/api/ws',
       },
       lan: {
-        API_ORIGIN: 'https://192.168.31.205:10001',
-        API_HTTP_URL: 'https://192.168.31.205:10001/api',
-        API_WS_URL: 'wss://192.168.31.205:10001/api/ws',
+        API_ORIGIN: 'http://127.0.0.1:10001',
+        API_HTTP_URL: 'http://127.0.0.1:10001/api',
+        API_WS_URL: 'ws://127.0.0.1:10001/api/ws',
       },
     },
     INVITE_LINK_MARKER: 'vika',
@@ -217,6 +251,23 @@
     }
   };
 
+  app.getPendingInviteRoomId = function getPendingInviteRoomId() {
+    try {
+      const token = String(sessionStorage.getItem('ym-sync-pending-invite') || '').trim();
+      return token ? app.extractRoomId(token) : '';
+    } catch (_error) {
+      return '';
+    }
+  };
+
+  app.clearPendingInvite = function clearPendingInvite() {
+    try {
+      sessionStorage.removeItem('ym-sync-pending-invite');
+    } catch (_error) {
+      // Хранилище вкладки может быть недоступно.
+    }
+  };
+
   app.buildInviteLink = function buildInviteLink(roomId) {
     const normalized = app.normalizeRoomId(roomId);
     if (!normalized) {
@@ -262,7 +313,10 @@
   };
 
   app.avatarFromName = function avatarFromName(seed) {
-    return `https://api.dicebear.com/9.x/thumbs/svg?seed=${encodeURIComponent(seed || 'anon')}`;
+    const letters = String(seed || 'Гость').trim().slice(0, 2).toUpperCase() || 'Го';
+    const safeLetters = letters.replace(/[&<>"]/g, '');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="#2a2d33"/><text x="40" y="48" text-anchor="middle" fill="#ffffff" font-size="28" font-family="sans-serif">${safeLetters}</text></svg>`;
+    return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
   };
 
   app.normalizeYandexAvatarSize = function normalizeYandexAvatarSize(rawValue) {
@@ -505,6 +559,7 @@
 
     app.setBusy(true);
     app.clearError();
+    app.clearPendingInvite();
 
     try {
       app.STATE.clientId = app.STATE.clientId || `local-${makeLocalRoomId()}`;
@@ -568,6 +623,14 @@
   };
 
   app.ensureAutoRoom = async function ensureAutoRoom() {
+    const pendingRoomId = app.getPendingInviteRoomId();
+    if (pendingRoomId) {
+      app.STATE.joinRoleHint = 'listener';
+      return app.joinRoom(pendingRoomId, {
+        silentToast: true,
+        roleHint: 'listener',
+      });
+    }
     if (app.STATE.roomId) {
       return;
     }

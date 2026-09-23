@@ -1,0 +1,13 @@
+{
+  "name": "ynison-sync-server",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Комната: принимает песню от одного браузера и отдаёт её остальным.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

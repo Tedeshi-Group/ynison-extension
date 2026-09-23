@@ -38,15 +38,16 @@
 
     link.classList.add('ym-sync-sidebar-link');
     link.setAttribute('data-ym-sync-link', '1');
-    link.setAttribute('href', '/together');
-    link.setAttribute('aria-label', 'Вместе (макет)');
+    link.setAttribute('href', '/');
+    link.setAttribute('aria-label', 'Вместе');
     app.replaceLinkIcon(link);
     app.replaceFirstTextNode(link, 'Вместе');
 
     link.addEventListener('click', (event) => {
       event.preventDefault();
+      event.stopPropagation();
       app.openSyncPage();
-    });
+    }, true);
 
     listRoot.insertBefore(item, searchItem);
     app.UI.sidebarItem = item;
@@ -124,12 +125,46 @@
     app.UI.playerBarCopyBtn.setAttribute('title', 'Открыть страницу лобби');
   };
 
+  app.waitForMusicShell = function waitForMusicShell() {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (main) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        observer.disconnect();
+        window.removeEventListener('load', tick);
+        resolve(main);
+      };
+      const tick = () => {
+        const main = document.querySelector('main');
+        if (!main || main.getBoundingClientRect().height < 120) {
+          return;
+        }
+        finish(main);
+      };
+      const observer = new MutationObserver(tick);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      window.addEventListener('load', tick);
+      tick();
+    });
+  };
+
   app.openSyncPage = async function openSyncPage(options = {}) {
     const {
       updateHistory = true,
       joinRoleHint = '',
     } = options || {};
-    const host = app.ensureMainHost();
+    const pendingRoomId = typeof app.getPendingInviteRoomId === 'function'
+      ? app.getPendingInviteRoomId()
+      : '';
+    if (pendingRoomId) {
+      app.STATE.joinInput = pendingRoomId;
+      app.STATE.joinRoleHint = 'listener';
+    }
+
+    const host = await app.waitForMusicShell();
     if (!host) {
       return;
     }
@@ -196,6 +231,7 @@
   };
 
   app.closeSyncPage = function closeSyncPage() {
+    app.clearPendingInvite();
     app.hideSyncPage();
     app.STATE.joinInput = '';
     const fallbackPath = app.STATE.__lastMusicPath || '/collection';
@@ -215,13 +251,20 @@
 
   app.syncPageUrl = function syncPageUrl() {
     const url = new URL(window.location.href);
-    url.pathname = '/together';
+    if (url.pathname === '/together' || url.pathname === '/together/') {
+      url.pathname = '/';
+    }
     url.searchParams.delete('session');
     url.searchParams.delete('roomId');
     url.searchParams.delete('together');
 
+    if (url.pathname === window.location.pathname && url.search === window.location.search) {
+      return;
+    }
+
     const nextState = typeof history.state === 'object' && history.state !== null ? { ...history.state } : {};
     nextState.__ymSyncInternal = true;
+    app.STATE.__suppressNavigation = true;
     history.replaceState(nextState, '', url.toString());
   };
 
@@ -483,7 +526,7 @@
   };
 
   app.ensureMainHost = function ensureMainHost() {
-    return document.querySelector('main.Content_main__8_wIa') || document.querySelector('main') || document.body;
+    return document.querySelector('main.Content_main__8_wIa') || document.querySelector('main');
   };
 
   app.render = function render() {
@@ -512,10 +555,14 @@
     }
 
     if (!app.STATE.roomId) {
-      return 'Создаём комнату — это займёт доли секунды.';
+      return 'Комната ещё не создана.';
     }
 
-    return 'Лобби активно. Нажми на “+”, чтобы пригласить других.';
+    if (!app.STATE.isConnectedToBackend) {
+      return 'Сервер не на связи. Второй человек не появится, пока команда npm start в папке server не запущена.';
+    }
+
+    return 'Сервер на связи. Второй человек появится здесь, когда откроет ссылку.';
   };
 
   app.replaceLinkIcon = function replaceLinkIcon(link) {
